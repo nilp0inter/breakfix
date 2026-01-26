@@ -1,0 +1,23 @@
+[project]
+name = "breakfix"
+version = "0.1.0"
+description = "Add your description here"
+authors = [{ name = "Roberto Abdelkader Martínez Pérez", email = "robertomartinezp@gmail.com" }]
+readme = "README.md"
+urls = { Repository = "https://github.com/nilp0inter/breakfix" }
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic-ai>=1.47.0",
+    "pydantic-ai-filesystem-sandbox>=0.9.0",
+]
+
+[project.scripts]
+breakfix = "breakfix.cli:main"
+
+[tool.uv]
+package = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
