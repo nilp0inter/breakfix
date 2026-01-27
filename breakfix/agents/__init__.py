@@ -11,21 +11,5 @@ This package contains all 7 specialist agents of the BreakFix team:
 - Curator: Refactors code and tests for elegance
 """
 
-# Import all agents for easy access
-from .architect import architect
-from .pioneer import pioneer
-from .gatekeeper import gatekeeper
-from .builder import builder
-from .pruner import pruner
-from .sniper import sniper
-from .curator import curator
-
-__all__ = [
-    "architect",
-    "pioneer",
-    "gatekeeper",
-    "builder",
-    "pruner",
-    "sniper",
-    "curator",
-]
+# Agents are now instantiated dynamically via get_<agent_name> functions
+# and are no longer re-exported here as static instances.

@@ -1,28 +1,30 @@
 from pydantic_ai import Agent
-from breakfix.models import CodeImplementation, CoverageReport, BreakfixConfig
-from breakfix.sandbox_utils import get_pruner_toolset
+from breakfix.models import CoverageReport, BreakfixConfig
+from breakfix.sandbox_utils import get_pruner_toolset, get_mounted_paths, run_coverage_analysis
 
-# Initialize BreakfixConfig (for now, default values)
-_breakfix_config = BreakfixConfig()
-_pruner_toolset = get_pruner_toolset(_breakfix_config)
+def get_pruner(config: BreakfixConfig) -> Agent:
+    toolset = get_pruner_toolset(config)
+    
+    code_paths, test_paths, docs_paths = get_mounted_paths(config)
 
-# Define the Pruner Agent
-pruner = Agent(
-    "openai:gpt-5-mini",
-    output_type=CoverageReport,
-    system_prompt=(
-        "You are The Pruner, the Cynic of the BreakFix team.\n"
-        "Your goal is to identify and remove dead code that isn't covered by tests.\n"
-        "Follow YAGNI (You Ain't Gonna Need It) principles:\n"
-        "1. Run coverage reports to identify unused code\n"
-        "2. Be ruthless - if it's not tested, it doesn't belong\n"
-        "3. Remove dead functions, unused imports, unreachable code\n"
-        "4. Focus on the implementation code, not test code\n"
-        "5. Provide specific recommendations for cleanup\n"
-        "You have read/write access to the codebase.\n"
-        "Project root is mounted at `/project`.\n"
-        "Use pytest coverage commands to analyze the code.\n"
-        "Return a detailed CoverageReport with findings and recommendations."
-    ),
-    toolsets=[_pruner_toolset],
-)
+    return Agent(
+        "openai:gpt-4.1-mini",
+        output_type=CoverageReport,
+        system_prompt=(
+            f"You are The Pruner, the Cynic of the BreakFix team.\n"
+            "Your goal is to identify and remove dead code that isn't covered by tests.\n"
+            "You will receive a list of implementation and test file paths.\n"
+            "**CRITICAL INSTRUCTION:**\n"
+            "1. You MUST use the `run_coverage_analysis` tool to analyze the provided files. DO NOT attempt to run `pytest` or coverage commands manually.\n"
+            "2. Based on the tool's output, determine if there is dead code.\n"
+            f"3. If there is dead code, you may use `read_file` and `write_file` to remove it (only from implementation files, which are in: {code_paths}).\n"
+            "4. Return a `CoverageReport` summarizing your findings and actions.\n"
+            "Follow YAGNI (You Ain't Gonna Need It) principles:\n"
+            "1. Be ruthless - if it's not tested, it doesn't belong\n"
+            "2. Remove dead functions, unused imports, unreachable code\n"
+            f"The mounted code directories are: {code_paths}.\n"
+            f"The mounted test directories are: {test_paths}.\n"
+        ),
+        toolsets=[toolset],
+        tools=[run_coverage_analysis],
+    )

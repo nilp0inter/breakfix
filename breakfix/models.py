@@ -21,6 +21,16 @@ class MicroSpec(BaseModel):
     )
 
 
+class TestSuiteReference(BaseModel):
+    """
+    Reference to the test files created by the Pioneer.
+    """
+    test_file_paths: List[str] = Field(
+        ..., description="List of absolute paths to the test files created on disk."
+    )
+    description: str = Field(..., description="Brief summary of the test suite.")
+
+
 class TestCase(BaseModel):
     """
     A single test case definition.
@@ -60,6 +70,16 @@ class ValidationResult(BaseModel):
     issues: List[str] = Field(
         default_factory=list, description="Specific issues found."
     )
+
+
+class CodeReference(BaseModel):
+    """
+    Reference to the implementation files created by the Builder.
+    """
+    implementation_file_paths: List[str] = Field(
+        ..., description="List of absolute paths to the implementation files created on disk."
+    )
+    description: str = Field(..., description="Brief summary of the implementation.")
 
 
 class CodeImplementation(BaseModel):
@@ -133,15 +153,15 @@ class BreakfixConfig(BaseModel):
     project_root: Path = Field(
         default=Path("."), description="The root directory of the project."
     )
-    code_globs: List[str] = Field(
-        default_factory=lambda: ["breakfix/**/*.py"],
-        description="Glob patterns for code files.",
+    code_dirs: List[str] = Field(
+        default_factory=lambda: ["breakfix"],
+        description="List of directory paths relative to project_root containing code.",
     )
-    test_globs: List[str] = Field(
-        default_factory=lambda: ["tests/**/*.py"],
-        description="Glob patterns for test files.",
+    test_dirs: List[str] = Field(
+        default_factory=lambda: ["tests"],
+        description="List of directory paths relative to project_root containing tests.",
     )
-    docs_globs: List[str] = Field(
-        default_factory=lambda: ["*.md", "docs/**/*.md"],
-        description="Glob patterns for documentation files.",
+    docs_dirs: List[str] = Field(
+        default_factory=lambda: ["docs"],
+        description="List of directory paths relative to project_root containing documentation.",
     )
