@@ -172,3 +172,9 @@ poetry.toml
 
 # LSP config files
 pyrightconfig.json
+
+
+### Created by https://www.gitignore.io
+### direnv ###
+.direnv
+.envrc

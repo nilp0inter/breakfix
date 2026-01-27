@@ -1,7 +1,13 @@
-from pydantic_ai_filesystem_sandbox import FileSystemToolset, Sandbox, SandboxConfig, Mount
+from pydantic_ai_filesystem_sandbox import (
+    FileSystemToolset,
+    Sandbox,
+    SandboxConfig,
+    Mount,
+)
 from breakfix.models import BreakfixConfig
 from pathlib import Path
-from typing import List
+from typing import Any
+
 
 def get_architect_toolset(config: BreakfixConfig) -> FileSystemToolset:
     """
@@ -11,24 +17,61 @@ def get_architect_toolset(config: BreakfixConfig) -> FileSystemToolset:
     project_root = config.project_root.resolve()
 
     mounts = [
-        # Mount the 'breakfix' source directory
-        Mount(host_path=str(project_root / "breakfix"), mount_point="/app", mode="ro"),
-        # Mount the 'tests' directory (if it exists)
-        Mount(host_path=str(project_root / "tests"), mount_point="/tests", mode="ro"),
-        # Mount specific important files from the project root
-        Mount(host_path=str(project_root / "pyproject.toml"), mount_point="/pyproject.toml", mode="ro"),
-        Mount(host_path=str(project_root / "README.md"), mount_point="/README.md", mode="ro"),
-        Mount(host_path=str(project_root / "GEMINI.md"), mount_point="/GEMINI.md", mode="ro"),
-        Mount(host_path=str(project_root / "pydantic-ai.docs.txt"), mount_point="/pydantic-ai.docs.txt", mode="ro"),
+        # Mount the entire project root as read-only to /project
+        Mount(host_path=project_root, mount_point="/project", mode="ro"),  # type: ignore
     ]
 
-    # Filter out mounts where the host_path does not exist
-    existing_mounts = [m for m in mounts if Path(m.host_path).exists()]
-
-    sandbox_config = SandboxConfig(mounts=existing_mounts)
+    sandbox_config = SandboxConfig(mounts=mounts)
     sandbox = Sandbox(sandbox_config)
     return FileSystemToolset(sandbox)
 
-# You can add similar functions for other agents later:
-# def get_pioneer_toolset(config: BreakfixConfig) -> FileSystemToolset:
-#     ...
+
+def get_pioneer_toolset(config: BreakfixConfig) -> FileSystemToolset:
+    """
+    Creates a FileSystemToolset for the Pioneer agent.
+    The Pioneer needs read-only access to understand project structure and test conventions.
+    """
+    project_root = config.project_root.resolve()
+
+    mounts = [
+        # Mount the entire project root as read-only to /project
+        Mount(host_path=project_root, mount_point="/project", mode="ro"),  # type: ignore
+    ]
+
+    sandbox_config = SandboxConfig(mounts=mounts)
+    sandbox = Sandbox(sandbox_config)
+    return FileSystemToolset(sandbox)
+
+
+def get_builder_toolset(config: BreakfixConfig) -> FileSystemToolset:
+    """
+    Creates a FileSystemToolset for the Builder agent.
+    The Builder needs read/write access to code files.
+    """
+    project_root = config.project_root.resolve()
+
+    mounts = [
+        # Mount code directories as read-write
+        Mount(host_path=project_root, mount_point="/project", mode="rw"),  # type: ignore
+    ]
+
+    sandbox_config = SandboxConfig(mounts=mounts)
+    sandbox = Sandbox(sandbox_config)
+    return FileSystemToolset(sandbox)
+
+
+def get_pruner_toolset(config: BreakfixConfig) -> FileSystemToolset:
+    """
+    Creates a FileSystemToolset for the Pruner agent.
+    The Pruner needs read/write access to run coverage reports and remove dead code.
+    """
+    project_root = config.project_root.resolve()
+
+    mounts = [
+        # Mount the entire project root as read-write to /project
+        Mount(host_path=project_root, mount_point="/project", mode="rw"),  # type: ignore
+    ]
+
+    sandbox_config = SandboxConfig(mounts=mounts)
+    sandbox = Sandbox(sandbox_config)
+    return FileSystemToolset(sandbox)
