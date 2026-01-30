@@ -30,9 +30,11 @@
 
     <h2>1. System Architecture Overview</h2>
 
-    <p>The system operates through six primary phases, organized by their execution cardinality and scope:</p>
+    <p>The system operates through eight primary phases, organized by their execution cardinality and scope:</p>
     <ol>
-        <li><strong>Specification Loop:</strong> (Project Scope) Captures user intent into a formal specification.</li>
+        <li><strong>Specification Loop:</strong> (Project Scope) Captures user intent into a formal specification and project metadata.</li>
+        <li><strong>E2E Test Builder:</strong> (Project Scope) Creates test harness using Claude Code.</li>
+        <li><strong>Scaffolding:</strong> (Project Scope) Initializes Python project structure using PyScaffold.</li>
         <li><strong>Prototyping Loop:</strong> (Project Scope) Generates a working but unrefined prototype.</li>
         <li><strong>Refinement Loop:</strong> (Project Scope) Applies architectural separation (Functional Core/Imperative Shell).</li>
         <li><strong>Distillation Loop:</strong> (Project Scope) Decomposes the refined prototype into atomic units and their test plans.</li>
@@ -64,10 +66,24 @@
                 SpecEntry(Start Phase 1) --> Analyst["Agent: Analyst (Pydantic AI)"]:::agent
                 Analyst --> CheckSpec{"Check: Consistency"}:::check
                 CheckSpec -- "Error: Ambiguous<br>or Bad Format" --&gt; Analyst
-                CheckSpec -- OK --> ReqArtifact["Artifact: Spec + Fixtures"]:::artifact
-                
+                CheckSpec -- OK --> ReqArtifact["Artifact: Spec + Fixtures + Metadata"]:::artifact
+
+                %% PHASE 1a: E2E Test Builder
+                ReqArtifact --> E2EEntry(Start Phase 1a)
+                E2EEntry --> E2EBuilder["Agent: E2E Builder (Claude Code)"]:::agent
+                E2EBuilder --> CheckE2EBuilder{"Check: Tests Pass?"}:::check
+                CheckE2EBuilder -- "Error: Tests Failed" --&gt; E2EBuilder
+                CheckE2EBuilder -- OK --> E2EArtifact["Artifact: e2e-tests/"]:::artifact
+
+                %% PHASE 1b: Scaffolding
+                E2EArtifact --> ScaffoldEntry(Start Phase 1b)
+                ScaffoldEntry --> Scaffold["Process: PyScaffold putup"]:::process
+                Scaffold --> CheckScaffold{"Check: Success?"}:::check
+                CheckScaffold -- "Error: Failed" --&gt; ScaffoldError["Error: Halt"]:::error
+                CheckScaffold -- OK --> ScaffoldArtifact["Artifact: prototype/ structure"]:::artifact
+
                 %% PHASE 2: Grounding
-                ReqArtifact --> ProtoEntry(Start Phase 2)
+                ScaffoldArtifact --> ProtoEntry(Start Phase 2)
                 ProtoEntry --> Hacker["Agent: Prototyper (Anthropic Agent SDK)"]:::agent
                 Hacker --> CheckE2E{"Check: E2E Tests"}:::check
                 CheckE2E -- "Error: Tests Failed" --&gt; Hacker
@@ -165,11 +181,12 @@
     <ul>
         <li><strong>Cardinality:</strong> Runs <strong>once per project idea</strong>.</li>
         <li><strong>Agent:</strong> <code>Analyst</code> (Pydantic AI).</li>
-        <li><strong>Goal:</strong> Converge on a clear, testable software specification with concrete examples.</li>
+        <li><strong>Goal:</strong> Converge on a clear, testable software specification with concrete examples and collect project metadata for scaffolding.</li>
         <li><strong>Input:</strong> Raw user idea from the input harness.</li>
         <li><strong>Process:</strong> The <code>Analyst</code> conducts an interactive Q&A session with the user via the <code>ask_user</code> tool, following a top-down tree descent interview strategy:
             <ol>
                 <li><strong>Broad Understanding:</strong> Core problem, target users, main goal</li>
+                <li><strong>Project Identity:</strong> Project name, package name, description, license, URL, and CI preferences</li>
                 <li><strong>Feature Exploration:</strong> Key features and expected behaviors</li>
                 <li><strong>Edge Cases:</strong> Boundary conditions and unusual inputs</li>
                 <li><strong>Error Handling:</strong> Failure scenarios and recovery strategies</li>
@@ -183,7 +200,59 @@
                 <li>At least 3 <code>TestFixture</code> objects required (happy path, edge case, error case)</li>
             </ul>
         </li>
-        <li><strong>Output:</strong> <code>AnalystOutput</code> containing a specification string and a list of <code>TestFixture</code> objects (each with name, description, input_data, and expected_output).</li>
+        <li><strong>Output:</strong> <code>AnalystOutput</code> containing a specification string, a list of <code>TestFixture</code> objects (each with name, description, input_data, and expected_output), and <code>ProjectMetadata</code> for scaffolding.</li>
+    </ul>
+
+    <h4>Phase 1a: E2E Test Builder</h4>
+    <ul>
+        <li><strong>Cardinality:</strong> Runs <strong>once per project</strong>, after specification.</li>
+        <li><strong>Agent:</strong> Claude Code via <code>claude-agent-sdk</code>.</li>
+        <li><strong>Goal:</strong> Create a test harness that can validate prototypes against fixtures.</li>
+        <li><strong>Input:</strong> Specification and test fixtures from Phase 1.</li>
+        <li><strong>Process:</strong>
+            <ol>
+                <li>Create <code>e2e-tests/</code> directory</li>
+                <li>Write <code>fixtures.json</code> with test fixtures</li>
+                <li>Use Claude Code to generate <code>run_tests.py</code> that:
+                    <ul>
+                        <li>Reads fixtures from JSON</li>
+                        <li>Accepts program path as CLI argument</li>
+                        <li>Interfaces with program (stdin/stdout, HTTP, CLI args, etc.)</li>
+                        <li>Compares results with expected outputs</li>
+                        <li>Reports pass/fail with exit code</li>
+                    </ul>
+                </li>
+                <li>Generate <code>mock_program.py</code> that implements fixture behavior for self-verification</li>
+                <li>Verify all tests pass against the mock program</li>
+            </ol>
+        </li>
+        <li><strong>Output:</strong> Complete E2E test harness in <code>e2e-tests/</code> directory containing <code>fixtures.json</code>, <code>run_tests.py</code>, and <code>mock_program.py</code>.</li>
+    </ul>
+
+    <h4>Phase 1b: Project Scaffolding</h4>
+    <ul>
+        <li><strong>Cardinality:</strong> Runs <strong>once per project</strong>, after specification is complete.</li>
+        <li><strong>Goal:</strong> Initialize a proper Python project structure using PyScaffold in the <code>prototype/</code> subdirectory.</li>
+        <li><strong>Input:</strong> <code>ProjectMetadata</code> from the Analyst phase containing:
+            <ul>
+                <li><code>project_name</code>: Installable name (pip install name)</li>
+                <li><code>package_name</code>: Python package name for imports</li>
+                <li><code>description</code>: Short project description</li>
+                <li><code>license</code>: License type (MIT, Apache-2.0, GPL-3.0-only, etc.)</li>
+                <li><code>url</code>: Project URL (optional)</li>
+                <li><code>github_actions</code>: Whether to add GitHub Actions CI config</li>
+            </ul>
+        </li>
+        <li><strong>Process:</strong> Executes PyScaffold's <code>putup</code> command with the collected metadata to create a standard Python project structure including:
+            <ul>
+                <li><code>pyproject.toml</code> with project metadata</li>
+                <li>Package directory structure</li>
+                <li>Test directory</li>
+                <li>Optional GitHub Actions CI configuration</li>
+            </ul>
+        </li>
+        <li><strong>Mechanistic Check:</strong> Verifies that <code>putup</code> completes successfully. On failure, returns an error and halts.</li>
+        <li><strong>Output:</strong> Initialized Python project structure in <code>prototype/</code> subdirectory, ready for the Prototyping phase to write code into.</li>
     </ul>
 
     <h4>Phase 2: The Prototyping Loop</h4>

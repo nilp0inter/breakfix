@@ -4,7 +4,7 @@ import subprocess
 from argparse import Namespace
 from dataclasses import dataclass
 
-from breakfix.agents import create_analyst
+from breakfix.agents import create_analyst, run_e2e_builder
 from breakfix.graph import run_graph, NodeErrored, NodeFailed
 from breakfix.nodes import (
     TestCase,
@@ -41,6 +41,9 @@ async def run(working_directory: str):
 
         # Analyst agent factory (input_fn baked in)
         create_analyst=lambda: create_analyst(model="openai:gpt-5-mini", input_fn=input),
+
+        # Phase 1a: E2E Test Builder
+        run_e2e_builder=run_e2e_builder,
 
         # Phase 1b: Scaffolding
         run_scaffold=run_scaffold,

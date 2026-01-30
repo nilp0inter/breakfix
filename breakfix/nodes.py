@@ -71,6 +71,22 @@ async def phase_specification_node(state: ProjectState, *, deps):
     state.spec = analyst_output.specification
     state.fixtures = analyst_output.fixtures
     state.project_metadata = analyst_output.project
+    return MoveToNode.with_parameters(phase_e2e_builder_node, state)
+
+
+async def phase_e2e_builder_node(state: ProjectState, *, deps):
+    """Create E2E test harness before scaffolding."""
+    logging.info("[OUTER] Phase 1a: E2E Test Builder")
+
+    result = await deps.run_e2e_builder(
+        working_dir=state.working_directory,
+        fixtures=state.fixtures,
+        spec=state.spec
+    )
+
+    if not result.success:
+        return NodeError(error=f"E2E builder failed: {result.error}")
+
     return MoveToNode.with_parameters(phase_scaffold_node, state)
 
 
