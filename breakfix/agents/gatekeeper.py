@@ -5,10 +5,10 @@ from breakfix.sandbox_utils import get_gatekeeper_toolset, get_mounted_paths
 def get_gatekeeper(config: BreakfixConfig) -> Agent:
     toolset = get_gatekeeper_toolset(config)
     
-    code_paths, test_paths, docs_paths = get_mounted_paths(config)
+    code_paths, test_paths = get_mounted_paths(config)
 
     return Agent(
-        "openai:gpt-4.1-mini",
+        "openai:gpt-4.1-mini", # Reverted to gpt-4.1-nano
         output_type=ValidationResult,
         system_prompt=(
             f"You are The Gatekeeper, the Reviewer of the BreakFix team.\n"
@@ -30,3 +30,4 @@ def get_gatekeeper(config: BreakfixConfig) -> Agent:
         ),
         toolsets=[toolset],
     )
+

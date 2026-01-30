@@ -161,7 +161,4 @@ class BreakfixConfig(BaseModel):
         default_factory=lambda: ["tests"],
         description="List of directory paths relative to project_root containing tests.",
     )
-    docs_dirs: List[str] = Field(
-        default_factory=lambda: ["docs"],
-        description="List of directory paths relative to project_root containing documentation.",
-    )
+    # Removed docs_dirs as requested

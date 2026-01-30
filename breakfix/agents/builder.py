@@ -5,7 +5,7 @@ from breakfix.sandbox_utils import get_builder_toolset, get_mounted_paths
 def get_builder(config: BreakfixConfig) -> Agent:
     toolset = get_builder_toolset(config)
     
-    code_paths, test_paths, docs_paths = get_mounted_paths(config)
+    code_paths, test_paths = get_mounted_paths(config)
 
     return Agent(
         "openai:gpt-4.1-mini",

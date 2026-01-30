@@ -261,19 +261,13 @@ def main():
         default=["tests"],
         help="List of directory paths relative to project-root containing tests (e.g., 'tests', 'specs').",
     )
-    parser.add_argument(
-        "--docs-dirs",
-        nargs="+",
-        default=["docs"],
-        help="List of directory paths relative to project-root containing documentation (e.g., 'docs').",
-    )
+    # Removed --docs-dirs
     args = parser.parse_args()
 
     breakfix_config = BreakfixConfig(
         project_root=args.project_root,
         code_dirs=args.code_dirs,
         test_dirs=args.test_dirs,
-        docs_dirs=args.docs_dirs,
     )
 
     if not os.environ.get("OPENAI_API_KEY"):

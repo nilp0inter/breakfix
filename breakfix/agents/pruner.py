@@ -5,7 +5,7 @@ from breakfix.sandbox_utils import get_pruner_toolset, get_mounted_paths, run_co
 def get_pruner(config: BreakfixConfig) -> Agent:
     toolset = get_pruner_toolset(config)
     
-    code_paths, test_paths, docs_paths = get_mounted_paths(config)
+    code_paths, test_paths = get_mounted_paths(config)
 
     return Agent(
         "openai:gpt-4.1-mini",
@@ -28,3 +28,4 @@ def get_pruner(config: BreakfixConfig) -> Agent:
         toolsets=[toolset],
         tools=[run_coverage_analysis],
     )
+

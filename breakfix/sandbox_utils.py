@@ -24,27 +24,25 @@ def _resolve_dirs(root: Path, dir_names: List[str]) -> Set[Path]:
     return resolved_dirs
 
 
-def get_mounted_paths(config: BreakfixConfig) -> Tuple[List[str], List[str], List[str]]:
+def get_mounted_paths(config: BreakfixConfig) -> Tuple[List[str], List[str]]:
     """
-    Returns lists of mounted code, test, and documentation paths within the sandbox.
+    Returns lists of mounted code and test paths within the sandbox.
     """
     root = config.project_root.resolve()
 
     code_host_dirs = _resolve_dirs(root, config.code_dirs)
     test_host_dirs = _resolve_dirs(root, config.test_dirs)
-    docs_host_dirs = _resolve_dirs(root, config.docs_dirs)
 
     code_mounted_paths = [f"/project/{d.name}" for d in code_host_dirs]
     test_mounted_paths = [f"/project/{d.name}" for d in test_host_dirs]
-    docs_mounted_paths = [f"/project/{d.name}" for d in docs_host_dirs]
     
-    return code_mounted_paths, test_mounted_paths, docs_mounted_paths
+    return code_mounted_paths, test_mounted_paths
 
 
 def _create_mounts(config: BreakfixConfig, access_map: dict) -> List[Mount]:
     """
     Creates a list of mounts based on the configuration and access map.
-    access_map: dict mapping 'code', 'tests', 'docs' to 'ro' or 'rw'.
+    access_map: dict mapping 'code', 'tests' to 'ro' or 'rw'.
     """
     mounts = []
     root = config.project_root.resolve()
@@ -52,7 +50,6 @@ def _create_mounts(config: BreakfixConfig, access_map: dict) -> List[Mount]:
     # Identify directories for each category
     code_dirs = _resolve_dirs(root, config.code_dirs)
     test_dirs = _resolve_dirs(root, config.test_dirs)
-    docs_dirs = _resolve_dirs(root, config.docs_dirs)
     
     # Helper to add mounts
     def add_mounts(directories, mode):
@@ -66,33 +63,30 @@ def _create_mounts(config: BreakfixConfig, access_map: dict) -> List[Mount]:
     
     if 'tests' in access_map:
         add_mounts(test_dirs, access_map['tests'])
-        
-    if 'docs' in access_map:
-        add_mounts(docs_dirs, access_map['docs'])
     
     return mounts
 
 def get_architect_toolset(config: BreakfixConfig) -> FileSystemToolset:
     # Architect: RO on everything
-    mounts = _create_mounts(config, {'code': 'ro', 'tests': 'ro', 'docs': 'ro'})
+    mounts = _create_mounts(config, {'code': 'ro', 'tests': 'ro'})
     sandbox = Sandbox(SandboxConfig(mounts=mounts))
     return FileSystemToolset(sandbox)
 
 def get_pioneer_toolset(config: BreakfixConfig) -> FileSystemToolset:
-    # Pioneer: RW on Tests, RO on Code/Docs
-    mounts = _create_mounts(config, {'code': 'ro', 'tests': 'rw', 'docs': 'ro'})
+    # Pioneer: RW on Tests, RO on Code
+    mounts = _create_mounts(config, {'code': 'ro', 'tests': 'rw'})
     sandbox = Sandbox(SandboxConfig(mounts=mounts))
     return FileSystemToolset(sandbox)
 
 def get_gatekeeper_toolset(config: BreakfixConfig) -> FileSystemToolset:
     # Gatekeeper: RO on everything
-    mounts = _create_mounts(config, {'code': 'ro', 'tests': 'ro', 'docs': 'ro'})
+    mounts = _create_mounts(config, {'code': 'ro', 'tests': 'ro'})
     sandbox = Sandbox(SandboxConfig(mounts=mounts))
     return FileSystemToolset(sandbox)
 
 def get_builder_toolset(config: BreakfixConfig) -> FileSystemToolset:
-    # Builder: RW on Code, RO on Tests/Docs
-    mounts = _create_mounts(config, {'code': 'rw', 'tests': 'ro', 'docs': 'ro'})
+    # Builder: RW on Code, RO on Tests
+    mounts = _create_mounts(config, {'code': 'rw', 'tests': 'ro'})
     sandbox = Sandbox(SandboxConfig(mounts=mounts))
     return FileSystemToolset(sandbox)
 
