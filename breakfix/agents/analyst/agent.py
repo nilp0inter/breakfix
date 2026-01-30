@@ -12,8 +12,18 @@ class TestFixture(BaseModel):
     expected_output: Any = Field(description="The expected output/behavior")
 
 
+class ProjectMetadata(BaseModel):
+    """Metadata for PyScaffold project initialization."""
+    project_name: str = Field(description="Installable name (pip install name, e.g., 'my-project')")
+    package_name: str = Field(description="Package name for imports (e.g., 'my_project')")
+    description: str = Field(max_length=200, description="Short project description")
+    license: str = Field(default="MIT", description="License (MIT, Apache-2.0, GPL-3.0-only, etc.)")
+    url: str = Field(default="", description="Main project URL (optional)")
+    github_actions: bool = Field(default=False, description="Whether to add GitHub Actions CI config")
+
+
 class AnalystOutput(BaseModel):
-    """Output from the Analyst agent containing specification and test fixtures."""
+    """Output from the Analyst agent containing specification, test fixtures, and project metadata."""
     specification: str = Field(
         min_length=100,
         description="A detailed software specification derived from the user's idea"
@@ -22,6 +32,9 @@ class AnalystOutput(BaseModel):
         min_length=3,
         description="Test fixtures covering happy path, edge cases, and error cases"
     )
+    project: ProjectMetadata = Field(
+        description="Project metadata for PyScaffold initialization"
+    )
 
 
 ANALYST_SYSTEM_PROMPT = """You are a Requirements Analyst conducting a structured interview to transform
@@ -29,15 +42,23 @@ a vague software idea into a detailed specification with test fixtures.
 
 ## Interview Strategy (Top-Down Tree Descent)
 1. **Broad Understanding**: Start with the core problem, target users, main goal
-2. **Feature Exploration**: Identify key features and their expected behaviors
-3. **Edge Cases**: Probe boundary conditions and unusual inputs
-4. **Error Handling**: Understand what can go wrong and how to handle it
-5. **Validation**: Confirm critical assumptions before finalizing
+2. **Project Identity**: Gather project naming and metadata:
+   - What should the project be called? (for pip install, e.g., 'my-project')
+   - What should the Python package name be? (for imports, e.g., 'my_project')
+   - Brief one-line description of the project
+   - Preferred license (MIT, Apache-2.0, GPL-3.0-only, etc.) - default to MIT if unsure
+   - Project URL if any (optional)
+   - Whether GitHub Actions CI is needed
+3. **Feature Exploration**: Identify key features and their expected behaviors
+4. **Edge Cases**: Probe boundary conditions and unusual inputs
+5. **Error Handling**: Understand what can go wrong and how to handle it
+6. **Validation**: Confirm critical assumptions before finalizing
 
 ## Your Task
 Given the user's idea and conversation history:
 - Ask ONE focused clarifying question at a time using the ask_user tool
-- Each question should help inform a specific test fixture
+- Early in the interview, gather project identity information (name, package name, description, license)
+- Each question should help inform either project metadata or a specific test fixture
 - When you have enough detail (typically 5-8 exchanges), produce the final output
 
 ## Final Output
@@ -47,6 +68,13 @@ When ready, produce:
    - Happy path: normal successful use case
    - Edge case: boundary condition
    - Error case: invalid input or failure scenario
+3. Project metadata:
+   - project_name: installable name (pip install name, e.g., 'my-project')
+   - package_name: Python package name for imports (e.g., 'my_project')
+   - description: short project description (max 200 chars)
+   - license: license type (default: MIT)
+   - url: project URL (optional, can be empty)
+   - github_actions: whether to add GitHub Actions CI config (default: false)
 
 Base everything on the actual Q&A - do not invent requirements not discussed."""
 

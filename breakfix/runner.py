@@ -1,7 +1,8 @@
 import logging
 import random
-import time
+import subprocess
 from argparse import Namespace
+from dataclasses import dataclass
 
 from breakfix.agents import create_analyst
 from breakfix.graph import run_graph, NodeErrored, NodeFailed
@@ -12,16 +13,37 @@ from breakfix.nodes import (
 )
 
 
-async def run():
+@dataclass
+class ScaffoldResult:
+    """Result from running PyScaffold."""
+    success: bool
+    error: str = ""
+
+
+async def run(working_directory: str):
     def sim_check(prob):
         # Helper for mock probabilities
         return random.random() < prob
+
+    async def run_scaffold(cmd):
+        """Run PyScaffold putup command."""
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                return ScaffoldResult(success=True)
+            else:
+                return ScaffoldResult(success=False, error=result.stderr or result.stdout)
+        except Exception as e:
+            return ScaffoldResult(success=False, error=str(e))
 
     deps = Namespace(
         input=input,  # Used elsewhere
 
         # Analyst agent factory (input_fn baked in)
         create_analyst=lambda: create_analyst(model="openai:gpt-5-mini", input_fn=input),
+
+        # Phase 1b: Scaffolding
+        run_scaffold=run_scaffold,
 
         # Phase 2-4 Agents & Checks
         agent_prototyper=lambda x: "def proto(): pass",
@@ -50,8 +72,8 @@ async def run():
     logging.basicConfig(level=logging.INFO, format='%(message)s')
 
     try:
-        # Start the Outer Graph
-        result = await run_graph(start_project_node, deps=deps)
+        # Start the Outer Graph with working directory
+        result = await run_graph(start_project_node, working_directory, deps=deps)
         print(f"\nFinal Artifact: {result}")
 
     except (NodeErrored, NodeFailed) as e:

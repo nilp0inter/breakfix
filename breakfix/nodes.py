@@ -1,6 +1,7 @@
 import logging
 from dataclasses import dataclass, field
-from typing import Any, List
+from pathlib import Path
+from typing import Any, List, Optional
 
 from breakfix.graph import (
     MoveToNode,
@@ -10,6 +11,7 @@ from breakfix.graph import (
     NodeFailed,
     run_graph,
 )
+from breakfix.agents import ProjectMetadata
 
 
 # --- DATA STRUCTURES ---
@@ -30,8 +32,10 @@ class UnitWorkItem:
 @dataclass
 class ProjectState:
     user_idea: str
+    working_directory: str
     spec: str = ""
     fixtures: List[Any] = field(default_factory=list)
+    project_metadata: Optional[ProjectMetadata] = None
     prototype_code: str = ""
     refined_arch: str = ""
     unit_queue: List[UnitWorkItem] = field(default_factory=list)
@@ -43,9 +47,9 @@ class ProjectState:
 # (Spec -> Proto -> Refine -> Distill -> Unit Orchestrator)
 # ==============================================================================
 
-async def start_project_node(deps):
+async def start_project_node(working_directory: str, *, deps):
     user_idea = deps.input("Enter your software idea: ")
-    state = ProjectState(user_idea=user_idea)
+    state = ProjectState(user_idea=user_idea, working_directory=working_directory)
     return MoveToNode.with_parameters(phase_specification_node, state)
 
 
@@ -66,6 +70,37 @@ async def phase_specification_node(state: ProjectState, *, deps):
 
     state.spec = analyst_output.specification
     state.fixtures = analyst_output.fixtures
+    state.project_metadata = analyst_output.project
+    return MoveToNode.with_parameters(phase_scaffold_node, state)
+
+
+async def phase_scaffold_node(state: ProjectState, *, deps):
+    """Initialize project scaffold using PyScaffold."""
+    logging.info("[OUTER] Phase 1b: Project Scaffolding")
+
+    proto_dir = Path(state.working_directory) / "prototype"
+    meta = state.project_metadata
+
+    # Build putup command
+    cmd = [
+        "putup",
+        str(proto_dir),
+        "-n", meta.project_name,
+        "-p", meta.package_name,
+        "-d", meta.description,
+        "-l", meta.license,
+    ]
+    if meta.url:
+        cmd.extend(["-u", meta.url])
+    if meta.github_actions:
+        cmd.append("--github-actions")
+
+    # Execute via deps for testability
+    result = await deps.run_scaffold(cmd)
+
+    if not result.success:
+        return NodeError(error=f"Scaffolding failed: {result.error}")
+
     return MoveToNode.with_parameters(phase_prototyping_node, state)
 
 

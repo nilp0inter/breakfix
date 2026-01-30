@@ -1,3 +1,3 @@
-from .analyst import TestFixture, AnalystOutput, create_analyst
+from .analyst import TestFixture, ProjectMetadata, AnalystOutput, create_analyst
 
-__all__ = ["TestFixture", "AnalystOutput", "create_analyst"]
+__all__ = ["TestFixture", "ProjectMetadata", "AnalystOutput", "create_analyst"]
