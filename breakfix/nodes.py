@@ -121,6 +121,7 @@ async def phase_scaffold_node(state: ProjectState, *, deps):
 
 
 async def phase_prototyping_node(state: ProjectState, *, deps):
+    raise NotImplementedError
     logging.info("[OUTER] Phase 2: Prototyping")
     draft_code = deps.agent_prototyper(state.spec)
     e2e_pass, msg = deps.check_e2e_harness(draft_code)

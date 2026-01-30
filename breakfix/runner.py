@@ -3,6 +3,7 @@ import random
 import subprocess
 from argparse import Namespace
 from dataclasses import dataclass
+from pathlib import Path
 
 from breakfix.agents import create_analyst, run_e2e_builder
 from breakfix.graph import run_graph, NodeErrored, NodeFailed
@@ -74,9 +75,18 @@ async def run(working_directory: str):
 
     logging.basicConfig(level=logging.INFO, format='%(message)s')
 
+    # Create checkpoint directory
+    checkpoint_dir = Path(working_directory) / ".breakfix" / "execution"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
     try:
         # Start the Outer Graph with working directory
-        result = await run_graph(start_project_node, working_directory, deps=deps)
+        result = await run_graph(
+            start_project_node,
+            working_directory,
+            deps=deps,
+            checkpoint_dir=checkpoint_dir
+        )
         print(f"\nFinal Artifact: {result}")
 
     except (NodeErrored, NodeFailed) as e:
