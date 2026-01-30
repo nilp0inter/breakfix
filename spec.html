@@ -1,0 +1,361 @@
+
+                        <!DOCTYPE html>
+                        <html lang="en">
+                        <head>
+                            <meta charset="UTF-8">
+                            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+							<style>
+								body {
+									background-color: white; /* Ensure the iframe has a white background */
+								}
+
+								
+							</style>
+                        </head>
+                        <body>
+                            <!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agentic TDD Foundry: System Specification</title>
+</head>
+<body>
+
+    <h1>Agentic TDD Foundry: System Specification</h1>
+
+    <p>This document details the architecture and operational flow of the Agentic TDD Foundry, a multi-agent system designed to transform high-level user ideas into mathematically verified, production-grade software. The system employs a "Refinement & Reconstruction" paradigm, leveraging LLMs for creative problem-solving and rigorous mechanistic checks for quality assurance.</p>
+
+    <p>The system is structured as a series of nested control loops, each addressing a specific scope (Project, Unit, Atomic) and ensuring quality through iterative feedback. Agents implement specific roles, utilizing Pydantic AI for user-facing interactions and Anthropic Agent SDK (Claude Code) for code generation tasks.</p>
+
+    <h2>1. System Architecture Overview</h2>
+
+    <p>The system operates through six primary phases, organized by their execution cardinality and scope:</p>
+    <ol>
+        <li><strong>Specification Loop:</strong> (Project Scope) Captures user intent into a formal specification.</li>
+        <li><strong>Prototyping Loop:</strong> (Project Scope) Generates a working but unrefined prototype.</li>
+        <li><strong>Refinement Loop:</strong> (Project Scope) Applies architectural separation (Functional Core/Imperative Shell).</li>
+        <li><strong>Distillation Loop:</strong> (Project Scope) Decomposes the refined prototype into atomic units and their test plans.</li>
+        <li><strong>Ratchet Cycle:</strong> (Atomic Scope) Builds individual units using strict TDD, once per test case.</li>
+        <li><strong>Crucible Cycle:</strong> (Unit Scope) Hardens and optimizes each unit after its construction.</li>
+    </ol>
+
+    <h3>1.1. Execution Flow Diagram</h3>
+    <pre class="mermaid">
+        graph TD
+            %% Styling
+            classDef scope fill:#eceff1,stroke:#455a64,stroke-width:2px,stroke-dasharray: 5 5;
+            classDef agent fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
+            classDef check fill:#fff9c4,stroke:#fbc02d,stroke-width:2px;
+            classDef artifact fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,rx:5,ry:5;
+            classDef process fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
+            classDef ratchet fill:#ffebee,stroke:#c62828,stroke-width:4px;
+            classDef error fill:#ffebee,stroke:#c62828,stroke-width:1px,stroke-dasharray: 2 2;
+    
+            UserIdea(("User Idea")) --> SpecEntry
+    
+            %% =========================================================
+            %% SCOPE: PROJECT (Runs ONCE per Idea)
+            %% =========================================================
+            subgraph ProjectScope [Execution Scope: PROJECT - (Once per Idea)]
+                direction TB
+                
+                %% PHASE 1: Specification
+                SpecEntry(Start Phase 1) --> Analyst["Agent: Analyst (Pydantic AI)"]:::agent
+                Analyst --> CheckSpec{"Check: Consistency"}:::check
+                CheckSpec -- "Error: Ambiguous<br>or Bad Format" --&gt; Analyst
+                CheckSpec -- OK --> ReqArtifact["Artifact: Spec + Fixtures"]:::artifact
+                
+                %% PHASE 2: Grounding
+                ReqArtifact --> ProtoEntry(Start Phase 2)
+                ProtoEntry --> Hacker["Agent: Prototyper (Anthropic Agent SDK)"]:::agent
+                Hacker --> CheckE2E{"Check: E2E Tests"}:::check
+                CheckE2E -- "Error: Tests Failed" --&gt; Hacker
+                CheckE2E -- OK --> ProtoArtifact["Artifact: Working Prototype"]:::artifact
+    
+                %% PHASE 3: Refinement
+                ProtoArtifact --> RefineEntry(Start Phase 3)
+                RefineEntry --> Refactorer["Agent: Architect (Anthropic Agent SDK)"]:::agent
+                Refactorer --> CheckArch{"Check: Taint/Structure"}:::check
+                CheckArch -- "Error: Side Effects<br>or Bad Structure" --&gt; Refactorer
+                CheckArch -- OK --> ArchArtifact["Artifact: Refined Tree"]:::artifact
+    
+                %% PHASE 4: Distillation (Deterministic, no feedback loop typically needed)
+                ArchArtifact --> DistillEntry(Start Phase 4)
+                DistillEntry --> DepGraph["Process: Dependency Grapher"]:::process
+                DepGraph --> Oracle["Process: Oracle Generator<br>(Generates Test Cases for Units)"]:::process
+                Oracle --> UnitList["Artifact: Unit Queue (Prioritized)"]:::artifact
+            end
+    
+            UnitList --> UnitIterator{"Process: Next Unit?"}:::process
+    
+            %% =========================================================
+            %% SCOPE: UNIT (Runs ONCE per Unit)
+            %% =========================================================
+            subgraph UnitScope [Execution Scope: UNIT - (Once per Unit)]
+                direction TB
+                UnitIterator -- Yes --> TestIterator{"Process: Next Test Case?"}:::process
+    
+                %% =====================================================
+                %% SCOPE: ATOMIC (Runs ONCE per Test Case)
+                %% =====================================================
+                subgraph AtomicScope [Phase 5: The Ratchet Cycle]
+                    direction TB
+                    TestIterator -- Yes --> RatchetStart((Start Test Construction)):::ratchet
+                    
+                    %% Red Loop
+                    RatchetStart --> RedAgent["Agent: Tester (Anthropic Agent SDK)"]:::agent
+                    RedAgent --> CheckRed{"Check: Inventory + Failed State"}:::check
+                    CheckRed -- "Error: &gt;1 Test Added<br>or Test Passed" --&gt; RedAgent
+                    
+                    %% Green Loop
+                    CheckRed -- OK --> GreenAgent["Agent: Developer (Anthropic Agent SDK)"]:::agent
+                    GreenAgent --> CheckGreen{"Check: Pass + Coverage"}:::check
+                    CheckGreen -- "Error: Dead Code<br>or Test Failed(s)" --&gt; GreenAgent
+                    
+                    CheckGreen -- OK --> Commit["Process: Commit Code"]:::process
+                end
+                %% =====================================================
+    
+                Commit --> TestIterator
+    
+                %% PHASE 6: THE CRUCIBLE (Runs after all tests for unit are done)
+                TestIterator -- "No (Unit Construction Complete)" --> CrucibleStart(Start Phase 6: Crucible)
+                
+                subgraph CruciblePhase [Phase 6: The Crucible]
+                    direction TB
+                    
+                    %% Mutation Loop
+                    CrucibleStart --> Mutator["Tool: Mutmut/CosmicRay"]:::process
+                    Mutator --> CheckMut{"Check: Mutants Survived?"}:::check
+                    CheckMut -- Yes --> Sentinel["Agent: Sentinel (Anthropic Agent SDK)"]:::agent
+                    Sentinel --> CheckKill{"Verify: Kills Mutant?"}:::check
+                    CheckKill -- "Error: Failed to Kill" --&gt; Sentinel
+                    CheckKill -- OK --> AddTest["Process: Add Test to Suite"]:::process
+                    AddTest --> Mutator
+    
+                    %% Optimization Loop
+                    CheckMut -- "No (100% Score)" --> Optimizer["Agent: Optimizer (Anthropic Agent SDK)"]:::agent
+                    Optimizer --> CheckRegress{"Check: Regression?"}:::check
+                    CheckRegress -- "Error: Tests Failed" --&gt; Optimizer
+                    CheckRegress -- OK --> Converged{"Check: Optimized Enough?"}:::check
+                    Converged -- No --> Optimizer
+                end
+    
+                Converged -- Yes --> FinalUnit["Artifact: Final Unit (Hardened & Optimized)"]:::artifact
+            end
+    
+            FinalUnit --> UnitIterator
+            UnitIterator -- No --> Production["Final Production System"]:::artifact
+    </pre>
+
+    <h2>2. Agent Roles and Technologies</h2>
+    <p>This system design specifies the use of different LLM technologies adapted to the specific task at hand:</p>
+    <ul>
+        <li><strong>Pydantic AI:</strong> Used for agents interacting directly with the user (e.g., clarifying specs), where structured output and high-quality natural language interaction are paramount.</li>
+        <li><strong>Anthropic Agent SDK (Claude Code):</strong> Used for code generation, test writing, and code refactoring tasks, leveraging its strong capabilities in code understanding and generation.</li>
+    </ul>
+
+    <h2>3. Phase Details by Execution Scope</h2>
+
+    <h3>3.1. Project-Level Scope (1x per Idea)</h3>
+    <p>This linear sequence executes once per user idea, progressively refining ambiguity into a concrete plan.</p>
+
+    <h4>Phase 1: The Specification Loop</h4>
+    <ul>
+        <li><strong>Cardinality:</strong> Runs <strong>once per project idea</strong>.</li>
+        <li><strong>Agent:</strong> <code>Analyst</code> (Pydantic AI).</li>
+        <li><strong>Goal:</strong> Converge on a clear, testable software specification with concrete examples.</li>
+        <li><strong>Input:</strong> Raw user idea from the input harness.</li>
+        <li><strong>Process:</strong> The <code>Analyst</code> conducts an interactive Q&A session with the user via the <code>ask_user</code> tool, following a top-down tree descent interview strategy:
+            <ol>
+                <li><strong>Broad Understanding:</strong> Core problem, target users, main goal</li>
+                <li><strong>Feature Exploration:</strong> Key features and expected behaviors</li>
+                <li><strong>Edge Cases:</strong> Boundary conditions and unusual inputs</li>
+                <li><strong>Error Handling:</strong> Failure scenarios and recovery strategies</li>
+                <li><strong>Validation:</strong> Confirm critical assumptions before finalizing</li>
+            </ol>
+            The agent uses Pydantic AI's <code>iter()</code> context manager to maintain conversation context across multiple Q&A exchanges (typically 5-8).
+        </li>
+        <li><strong>Validation:</strong> Pydantic AI automatically validates the structured output via the <code>AnalystOutput</code> model:
+            <ul>
+                <li>Specification must be at least 100 characters</li>
+                <li>At least 3 <code>TestFixture</code> objects required (happy path, edge case, error case)</li>
+            </ul>
+        </li>
+        <li><strong>Output:</strong> <code>AnalystOutput</code> containing a specification string and a list of <code>TestFixture</code> objects (each with name, description, input_data, and expected_output).</li>
+    </ul>
+
+    <h4>Phase 2: The Prototyping Loop</h4>
+    <ul>
+        <li><strong>Cardinality:</strong> Runs <strong>once per project specification</strong>.</li>
+        <li><strong>Agent:</strong> <code>Prototyper</code> (Anthropic Agent SDK).</li>
+        <li><strong>Goal:</strong> Ground the specification in a functional, albeit rough, code implementation. This prototype serves as the "Oracle."</li>
+        <li><strong>Input:</strong> <code>requirements.md</code>.</li>
+        <li><strong>Process:</strong> The <code>Prototyper</code> writes a complete, monolithic Python script designed to fulfill the requirements, prioritizing functionality over code quality.</li>
+        <li><strong>Mechanistic Check:</strong> <code>E2E Harness</code>.
+            <ul>
+                <li><strong>Trigger:</strong> The generated prototype fails any of the tests in <code>fixtures.json</code> or has syntax errors.</li>
+                <li><strong>Feedback:</strong> Standard Python stack trace and explicit assertion failures from the E2E tests.</li>
+                <li><strong>Action:</strong> The <code>Prototyper</code> is prompted to debug and correct its implementation.</li>
+            </ul>
+        </li>
+        <li><strong>Output:</strong> <code>prototype.py</code> (a working but unrefined Python script).</li>
+    </ul>
+
+    <h4>Phase 3: The Refinement Loop</h4>
+    <ul>
+        <li><strong>Cardinality:</strong> Runs <strong>once per working prototype</strong>.</li>
+        <li><strong>Agent:</strong> <code>Architect</code> (Anthropic Agent SDK).</li>
+        <li><strong>Goal:</strong> Transform the monolithic prototype into a structurally clean architecture, adhering to "Functional Core, Imperative Shell" principles.</li>
+        <li><strong>Input:</strong> <code>prototype.py</code>.</li>
+        <li><strong>Process:</strong> The <code>Architect</code> refactors `prototype.py` by extracting pure logic into a designated `core` module and isolating side-effecting operations (I/O, network, database) into a `shell` module.</li>
+        <li><strong>Mechanistic Check:</strong> <code>Taint Analysis Processor</code>.
+            <ul>
+                <li><strong>Trigger:</strong>
+                    <ul>
+                        <li>Imports or calls to I/O-related modules (`os`, `sys`, `network`, `random`, `print`) are detected within the `core` module.</li>
+                        <li>High cyclomatic complexity or significant business logic branching is detected within `shell` functions.</li>
+                        <li>The refactored code introduces regressions (checked via rerunning <code>fixtures.json</code>).</li>
+                    </ul>
+                </li>
+                <li><strong>Feedback:</strong> Specific architectural violation details (e.g., "Side effect found in `core.py` on line 45: `print()` call detected. Move to `shell`," or "Function `process_request` in `shell.py` has high complexity; extract logic to `core`").</li>
+                <li><strong>Action:</strong> The <code>Architect</code> is prompted to correct the identified structural or impurity violations.</li>
+            </ul>
+        </li>
+        <li><strong>Output:</strong> A `src/` directory with `core/` and `shell/` modules and their respective files.</li>
+    </ul>
+
+    <h4>Phase 4: The Distillation Loop</h4>
+    <ul>
+        <li><strong>Cardinality:</strong> Runs <strong>once per refined prototype</strong>.</li>
+        <li><strong>Goal:</strong> Decompose the refined `core` module into discrete, atomic units, ready for reconstruction via TDD.</li>
+        <li><strong>Input:</strong> The architecturally refined code (<code>src/core/</code>).</li>
+        <li><strong>Process:</strong>
+            <ol>
+                <li><strong>Dependency Grapher:</strong> Analyzes the `core` module to build a full call graph of functions and classes.</li>
+                <li><strong>Oracle Generator:</strong> For each identified unit (starting with leaf nodes in a Deep-First Search traversal), the system dynamically traces its execution using inputs from the original <code>fixtures.json</code> or fuzzed data. It captures the exact arguments passed to the unit and its return values.</li>
+            </ol>
+        </li>
+        <li><strong>Mechanistic Check:</strong> This phase is primarily deterministic. Errors in graph generation or tracing halt the system for human intervention.</li>
+        <li><strong>Output:</strong> A prioritized <code>Unit Queue</code>. Each item in the queue represents a unit (e.g., a function) and contains a list of test definitions (description, precise input, and precise expected output derived from the Oracle).</li>
+    </ul>
+
+    <h3>3.2. Unit-Level Scope (1x per Unit)</h3>
+    <p>This loop constructs and hardens individual units, transitioning through test execution and quality verification.</p>
+
+    <h4>Step A: Unit Construction Iterator (Invokes Ratchet)</h4>
+    <ul>
+        <li><strong>Cardinality:</strong> Triggers the Ratchet Cycle <strong>once per test case</strong> within a unit's `Test Queue`.</li>
+        <li><strong>Process:</strong> The system dequeues a unit from the `Unit Queue`, then iterates through its list of test definitions, feeding each one into the **Ratchet Cycle**.</li>
+        <li><strong>Transition:</strong> Proceeds to Step B (Crucible) only after all tests for the current unit have been successfully implemented via the Ratchet Cycle (i.e., the unit is "functionally complete").</li>
+    </ul>
+
+    <h3>3.3. Atomic-Level Scope (1x per Test Case)</h3>
+    <p>This is the innermost loop, focusing on building out functionality one rigorously tested step at a time.</p>
+
+    <h4>Phase 5: The Ratchet Cycle</h4>
+    <ul>
+        <li><strong>Cardinality:</strong> Runs <strong>once per test case</strong> provided for a unit.</li>
+        <li><strong>Goal:</strong> Implement minimal code to satisfy a single failing test, ensuring 100% coverage of new lines.</li>
+        <li><strong>Input:</strong> A single test definition (description, input, expected output) from the Oracle.</li>
+        <li><strong>Process:</strong>
+            <ol>
+                <li><strong>Red Loop:</strong>
+                    <ul>
+                        <li><strong>Agent:</strong> <code>Tester</code> (Anthropic Agent SDK).</li>
+                        <li><strong>Action:</strong> Creates exactly one new test file/method that asserts the new behavior.</li>
+                        <li><strong>Mechanistic Check:</strong> <code>Test Inventory Checker</code>.
+                            <ul>
+                                <li><strong>Trigger:</strong> If `pytest --collect-only` identifies `(new_tests_count != 1)` or if the newly added test passes against the current codebase.</li>
+                                <li><strong>Feedback:</strong> "Error: You added N tests, expected 1. Remove extras." or "Error: The test `test_X` passed immediately; it must fail first."</li>
+                                <li><strong>Action:</strong> The <code>Tester</code> is prompted to re-attempt creating the failing test.</li>
+                            </ul>
+                        </li>
+                    </ul>
+                </li>
+                <li><strong>Green Loop:</strong>
+                    <ul>
+                        <li><strong>Agent:</strong> <code>Developer</code> (Anthropic Agent SDK).</li>
+                        <li><strong>Action:</strong> Writes the minimal implementation code required to make the newly added test pass.</li>
+                        <li><strong>Mechanistic Check:</strong> <code>Coverage Intersection Checker</code>.
+                            <ul>
+                                <li><strong>Trigger:</strong> If any tests (new or existing) fail, or if the code lines added by the `Developer` are not fully executed by the test suite (i.e., `(LinesAdded - LinesExecuted)` is not empty).</li>
+                                <li><strong>Feedback:</strong> "Error: Test `test_X` failed: [Stack Trace]" or "Error: You added code on lines [Y, Z] that was not executed by tests (dead code or unreached logic)."</li>
+                                <li><strong>Action:</strong> The <code>Developer</code> is prompted to correct the implementation.</li>
+                            </ul>
+                        </li>
+                    </ul>
+                </li>
+            </ol>
+        </li>
+        <li><strong>Output:</strong> The committed, functionally added / modified code for the unit. Control returns to the Unit Construction Iterator.</li>
+    </ul>
+
+    <h2>4. Phase 6: The Crucible (Hardening & Polishing)</h2>
+    <p>This phase is paramount for ensuring the production readiness of each unit. It runs **once per unit** after its construction via the Ratchet Cycle is complete.</p>
+
+    <h4>Sub-Cycle A: Mutation Testing (The Hardening)</h4>
+    <ul>
+        <li><strong>Cardinality:</strong> Runs <strong>once per unit</strong>, potentially iterating internally if mutants survive.</li>
+        <li><strong>Goal:</strong> Verify the completeness and sensitivity of the unit's test suite.</li>
+        <li><strong>Input:</strong> The functionally complete unit code and its corresponding test suite.</li>
+        <li><strong>Process:</strong>
+            <ol>
+                <li><strong>Mutant Generator:</strong> Invokes a mutation testing tool (e.g., <code>mutmut</code>, <code>cosmic-ray</code>) to automatically introduce small, logic-altering changes (mutants) into the unit's source code.</li>
+                <li><strong>Mutant Execution:</strong> The unit's test suite is run against each mutant.</li>
+                <li><strong>Mechanistic Check:</strong> <code>Mutant Status Checker</code>.
+                    <ul>
+                        <li><strong>Trigger:</strong> A mutant <strong>survives</strong> (i.e., the test suite passes on the mutated code, implying the tests are not sensitive enough to detect the logic change).</li>
+                        <li><strong>Action (Agent Triggered):</strong> The <code>Sentinel</code> (Anthropic Agent SDK) is alerted.</li>
+                    </ul>
+                </li>
+                <li><strong>Sentinel Loop:</strong>
+                    <ul>
+                        <li><strong>Agent:</strong> <code>Sentinel</code> (Anthropic Agent SDK).</li>
+                        <li><strong>Action:</strong> Receives the diff of the surviving mutant and is tasked with generating a *new* test case that passes on the original code but fails on the mutant.</li>
+                        <li><strong>Mechanistic Check:</strong> <code>Mutant Killer Verifier</code>.
+                            <ul>
+                                <li><strong>Trigger:</strong> The proposed test either fails against the *original* code or passes against the *mutant* code.</li>
+                                <li><strong>Feedback:</strong> "Error: Proposed test `test_killer` failed on original code (regression for original)" or "Error: Proposed test `test_killer` failed to kill the mutant; it still passed."</li>
+                                <li><strong>Action:</strong> The <code>Sentinel</code> is prompted to re-attempt writing a killer test. If retries are exhausted, the mutant may be flagged as "equivalent" or require human intervention.</li>
+                            </ul>
+                        </li>
+                    </ul>
+                </li>
+            </ol>
+        </li>
+        <li><strong>Output:</strong> A highly robust, "mutation-pure" test suite for the unit (100% mutation score).</li>
+    </ul>
+
+    <h4>Sub-Cycle B: Optimization (The Polishing)</h4>
+    <ul>
+        <li><strong>Cardinality:</strong> Runs <strong>once per unit</strong>, potentially iterating internally for multiple optimization passes.</li>
+        <li><strong>Goal:</strong> Refactor the unit's code to improve readability, performance, and adherence to best practices, with complete confidence in the test suite.</li>
+        <li><strong>Input:</strong> The unit's code and its 100% mutation-score-verified test suite (now a impenetrable safety net).</li>
+        <li><strong>Agent:</strong> <code>Optimizer</code> (Anthropic Agent SDK).</li>
+        <li><strong>Process:</strong>
+            <ol>
+                <li>The <code>Optimizer</code> receives the unit's code and a prompt instructing it to apply improvements without changing behavior.</li>
+                <li><strong>Mechanistic Check:</strong> <code>Regression Runner</code>.
+                    <ul>
+                        <li><strong>Trigger:</strong> Any modification by the <code>Optimizer</code> causes any test in the hardened suite to fail.</li>
+                        <li><strong>Feedback:</strong> Detailed stack trace and specific test failure reports.</li>
+                        <li><strong>Action:</strong> The <code>Optimizer</code> is prompted to fix the regression or revert its changes.</li>
+                    </ul>
+                </li>
+                <li><strong>Convergence Check:</strong> The system monitors if the <code>Optimizer</code> continues to propose meaningful improvements.</li>
+            </ol>
+        </li>
+        <li><strong>Output:</strong> The final, optimized, and regression-free unit code. Control returns to the `Unit Scope` to fetch the next unit.</li>
+    </ul>
+
+</body>
+</html>
+
+							<script>
+                            	
+							</script>
+                        </body>
+                        </html>
+                    

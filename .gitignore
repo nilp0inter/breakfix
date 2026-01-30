@@ -178,3 +178,4 @@ pyrightconfig.json
 ### direnv ###
 .direnv
 .envrc
+.envrc.local
