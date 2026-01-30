@@ -5,7 +5,7 @@ from argparse import Namespace
 from dataclasses import dataclass
 from pathlib import Path
 
-from breakfix.agents import create_analyst, run_e2e_builder
+from breakfix.agents import create_analyst, run_e2e_builder, analyze_interface, run_prototyper
 from breakfix.graph import run_graph, NodeErrored, NodeFailed
 from breakfix.nodes import (
     TestCase,
@@ -17,6 +17,13 @@ from breakfix.nodes import (
 @dataclass
 class ScaffoldResult:
     """Result from running PyScaffold."""
+    success: bool
+    error: str = ""
+
+
+@dataclass
+class E2EVerificationResult:
+    """Result from E2E test verification."""
     success: bool
     error: str = ""
 
@@ -37,6 +44,81 @@ async def run(working_directory: str):
         except Exception as e:
             return ScaffoldResult(success=False, error=str(e))
 
+    async def run_e2e_verification(e2e_dir: Path):
+        """Run E2E test verification with mock program."""
+        try:
+            result = subprocess.run(
+                ["python", "run_tests.py", str(e2e_dir / "mock_program.py")],
+                cwd=str(e2e_dir),
+                capture_output=True,
+                text=True
+            )
+            if result.returncode == 0:
+                return E2EVerificationResult(success=True)
+            else:
+                return E2EVerificationResult(
+                    success=False,
+                    error=f"Tests failed:\n{result.stdout}\n{result.stderr}"
+                )
+        except Exception as e:
+            return E2EVerificationResult(success=False, error=str(e))
+
+    async def run_prototype_e2e_test(proto_dir: Path, package_name: str):
+        """Run E2E tests against the prototype.
+
+        Creates a virtualenv, installs the prototype package, and runs
+        the E2E tests using the CLI entrypoint.
+        """
+        proto_dir = Path(proto_dir)
+        e2e_dir = proto_dir.parent / "e2e-tests"
+        venv_dir = proto_dir / ".venv"
+
+        try:
+            # Create virtualenv if it doesn't exist
+            if not venv_dir.exists():
+                result = subprocess.run(
+                    ["python", "-m", "venv", str(venv_dir)],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode != 0:
+                    return E2EVerificationResult(
+                        success=False,
+                        error=f"Failed to create venv:\n{result.stdout}\n{result.stderr}"
+                    )
+
+            # Install the prototype in editable mode
+            pip_path = venv_dir / "bin" / "pip"
+            result = subprocess.run(
+                [str(pip_path), "install", "-e", "."],
+                cwd=str(proto_dir),
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                return E2EVerificationResult(
+                    success=False,
+                    error=f"Failed to install prototype:\n{result.stdout}\n{result.stderr}"
+                )
+
+            # Run E2E tests using the CLI entrypoint from the venv
+            cli_path = venv_dir / "bin" / package_name
+            result = subprocess.run(
+                ["python", "run_tests.py", str(cli_path)],
+                cwd=str(e2e_dir),
+                capture_output=True,
+                text=True
+            )
+            if result.returncode == 0:
+                return E2EVerificationResult(success=True)
+            else:
+                return E2EVerificationResult(
+                    success=False,
+                    error=f"{result.stdout}\n{result.stderr}"
+                )
+        except Exception as e:
+            return E2EVerificationResult(success=False, error=str(e))
+
     deps = Namespace(
         input=input,  # Used elsewhere
 
@@ -45,11 +127,17 @@ async def run(working_directory: str):
 
         # Phase 1a: E2E Test Builder
         run_e2e_builder=run_e2e_builder,
+        run_e2e_verification=run_e2e_verification,
+        analyze_interface=analyze_interface,
 
         # Phase 1b: Scaffolding
         run_scaffold=run_scaffold,
 
-        # Phase 2-4 Agents & Checks
+        # Phase 2: Prototyping
+        run_prototyper=run_prototyper,
+        run_prototype_e2e_test=run_prototype_e2e_test,
+
+        # Phase 2-4 Agents & Checks (legacy mock stubs)
         agent_prototyper=lambda x: "def proto(): pass",
         check_e2e_harness=lambda x: (True, "") if sim_check(0.7) else (False, "404 Error"),
         agent_architect=lambda x: "src/core",

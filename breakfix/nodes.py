@@ -40,6 +40,7 @@ class ProjectState:
     refined_arch: str = ""
     unit_queue: List[UnitWorkItem] = field(default_factory=list)
     finished_units: List[str] = field(default_factory=list)
+    interface_description: str = ""  # Description of expected I/O interface
 
 
 # ==============================================================================
@@ -74,6 +75,19 @@ async def phase_specification_node(state: ProjectState, *, deps):
     return MoveToNode.with_parameters(phase_e2e_builder_node, state)
 
 
+def _format_interface_description(interface_desc) -> str:
+    """Format InterfaceDescription into a readable string for the prototyper."""
+    return f"""Summary: {interface_desc.summary}
+Input method: {interface_desc.input_method}
+Output method: {interface_desc.output_method}
+Input format: {interface_desc.input_format}
+Output format: {interface_desc.output_format}
+Protocol details: {interface_desc.protocol_details}
+Invocation: {interface_desc.invocation}
+Example interaction:
+{interface_desc.example_interaction}"""
+
+
 async def phase_e2e_builder_node(state: ProjectState, *, deps):
     """Create E2E test harness before scaffolding."""
     logging.info("[OUTER] Phase 1a: E2E Test Builder")
@@ -86,6 +100,21 @@ async def phase_e2e_builder_node(state: ProjectState, *, deps):
 
     if not result.success:
         return NodeError(error=f"E2E builder failed: {result.error}")
+
+    # Verify the E2E test harness works with the mock program
+    logging.info("[OUTER] Phase 1a: Verifying E2E test harness")
+    e2e_dir = Path(state.working_directory) / "e2e-tests"
+    verification_result = await deps.run_e2e_verification(e2e_dir)
+
+    if not verification_result.success:
+        return NodeError(error=f"E2E verification failed: {verification_result.error}")
+
+    # Analyze mock_program.py interface
+    logging.info("[OUTER] Phase 1a: Analyzing mock program interface")
+    mock_program_path = e2e_dir / "mock_program.py"
+    mock_program_code = mock_program_path.read_text()
+    interface_desc = await deps.analyze_interface(mock_program_code)
+    state.interface_description = _format_interface_description(interface_desc)
 
     return MoveToNode.with_parameters(phase_scaffold_node, state)
 
@@ -117,24 +146,62 @@ async def phase_scaffold_node(state: ProjectState, *, deps):
     if not result.success:
         return NodeError(error=f"Scaffolding failed: {result.error}")
 
+    # Patch setup.cfg to add console_scripts entry point
+    setup_cfg_path = proto_dir / "setup.cfg"
+    _patch_setup_cfg_entrypoint(setup_cfg_path, meta.package_name)
+
     return MoveToNode.with_parameters(phase_prototyping_node, state)
 
 
+def _patch_setup_cfg_entrypoint(setup_cfg_path: Path, package_name: str):
+    """Add console_scripts entry point to setup.cfg."""
+    content = setup_cfg_path.read_text()
+
+    # Find the [options.entry_points] section and add the console_scripts
+    entry_points_section = "[options.entry_points]"
+    if entry_points_section in content:
+        # Replace the section with one that includes the console script
+        new_section = f"""{entry_points_section}
+console_scripts =
+    {package_name} = {package_name}.skeleton:run
+"""
+        # Find where the section starts and the next section begins
+        start_idx = content.index(entry_points_section)
+        # Find the next section (starts with [)
+        rest = content[start_idx + len(entry_points_section):]
+        next_section_idx = rest.find("\n[")
+        if next_section_idx == -1:
+            # No next section, replace to end
+            content = content[:start_idx] + new_section
+        else:
+            # Replace up to next section
+            content = content[:start_idx] + new_section + rest[next_section_idx + 1:]
+
+        setup_cfg_path.write_text(content)
+
+
 async def phase_prototyping_node(state: ProjectState, *, deps):
-    raise NotImplementedError
+    """Create initial prototype implementation."""
     logging.info("[OUTER] Phase 2: Prototyping")
-    draft_code = deps.agent_prototyper(state.spec)
-    e2e_pass, msg = deps.check_e2e_harness(draft_code)
 
-    if not e2e_pass:
-        logging.warning(f"E2E Failed: {msg}")
-        return MoveToNode.with_parameters(phase_prototyping_node, state)
+    result = await deps.run_prototyper(
+        working_dir=state.working_directory,
+        spec=state.spec,
+        fixtures=state.fixtures,
+        package_name=state.project_metadata.package_name,
+        run_e2e_test=deps.run_prototype_e2e_test,
+        interface_description=state.interface_description,
+    )
 
-    state.prototype_code = draft_code
+    if not result.success:
+        return NodeError(error=f"Prototyping failed after {result.iterations} iterations: {result.error}")
+
+    logging.info(f"[OUTER] Prototype completed in {result.iterations} iteration(s)")
     return MoveToNode.with_parameters(phase_refinement_node, state)
 
 
 async def phase_refinement_node(state: ProjectState, *, deps):
+    raise NotImplementedError
     logging.info("[OUTER] Phase 3: Refinement")
     refined_code = deps.agent_architect(state.prototype_code)
     is_clean, msg = deps.check_architectural_taint(refined_code)

@@ -73,7 +73,8 @@
                 E2EEntry --> E2EBuilder["Agent: E2E Builder (Claude Code)"]:::agent
                 E2EBuilder --> CheckE2EBuilder{"Check: Tests Pass?"}:::check
                 CheckE2EBuilder -- "Error: Tests Failed" --&gt; E2EBuilder
-                CheckE2EBuilder -- OK --> E2EArtifact["Artifact: e2e-tests/"]:::artifact
+                CheckE2EBuilder -- OK --> InterfaceAnalyzer["Agent: Interface Analyzer (Pydantic AI)"]:::agent
+                InterfaceAnalyzer --> E2EArtifact["Artifact: e2e-tests/, InterfaceDescription"]:::artifact
 
                 %% PHASE 1b: Scaffolding
                 E2EArtifact --> ScaffoldEntry(Start Phase 1b)
@@ -224,9 +225,18 @@
                 </li>
                 <li>Generate <code>mock_program.py</code> that implements fixture behavior for self-verification</li>
                 <li>Verify all tests pass against the mock program</li>
+                <li>Use <code>Interface Analyzer</code> (Pydantic AI) to analyze <code>mock_program.py</code> and produce a structured description of its I/O interface:
+                    <ul>
+                        <li>Input/output methods (stdin, HTTP, CLI args, etc.)</li>
+                        <li>Data formats (JSON, plain text, line-by-line, etc.)</li>
+                        <li>Protocol details (ports, endpoints, encoding, etc.)</li>
+                        <li>Concrete example interaction</li>
+                    </ul>
+                    This interface description is stored in state and passed to the Prototyper to ensure implementation matches the expected interface.
+                </li>
             </ol>
         </li>
-        <li><strong>Output:</strong> Complete E2E test harness in <code>e2e-tests/</code> directory containing <code>fixtures.json</code>, <code>run_tests.py</code>, and <code>mock_program.py</code>.</li>
+        <li><strong>Output:</strong> Complete E2E test harness in <code>e2e-tests/</code> directory containing <code>fixtures.json</code>, <code>run_tests.py</code>, <code>mock_program.py</code>, and <code>InterfaceDescription</code>.</li>
     </ul>
 
     <h4>Phase 1b: Project Scaffolding</h4>
@@ -260,8 +270,8 @@
         <li><strong>Cardinality:</strong> Runs <strong>once per project specification</strong>.</li>
         <li><strong>Agent:</strong> <code>Prototyper</code> (Anthropic Agent SDK).</li>
         <li><strong>Goal:</strong> Ground the specification in a functional, albeit rough, code implementation. This prototype serves as the "Oracle."</li>
-        <li><strong>Input:</strong> <code>requirements.md</code>.</li>
-        <li><strong>Process:</strong> The <code>Prototyper</code> writes a complete, monolithic Python script designed to fulfill the requirements, prioritizing functionality over code quality.</li>
+        <li><strong>Input:</strong> <code>requirements.md</code> and <code>InterfaceDescription</code> from Phase 1a.</li>
+        <li><strong>Process:</strong> The <code>Prototyper</code> writes a complete, monolithic Python script designed to fulfill the requirements, prioritizing functionality over code quality. The prompt includes the interface specification to ensure the prototype's I/O interface matches exactly what the E2E tests expect.</li>
         <li><strong>Mechanistic Check:</strong> <code>E2E Harness</code>.
             <ul>
                 <li><strong>Trigger:</strong> The generated prototype fails any of the tests in <code>fixtures.json</code> or has syntax errors.</li>
@@ -422,8 +432,9 @@
 </body>
 </html>
 
+							<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
 							<script>
-                            	
+								mermaid.initialize({ startOnLoad: true });
 							</script>
                         </body>
                         </html>
