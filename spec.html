@@ -99,12 +99,15 @@
     
                 %% PHASE 4: Distillation (Deterministic, no feedback loop typically needed)
                 ArchArtifact --> DistillEntry(Start Phase 4)
-                DistillEntry --> DepGraph["Process: Dependency Grapher"]:::process
-                DepGraph --> Oracle["Process: Oracle Generator<br>(Generates Test Cases for Units)"]:::process
-                Oracle --> UnitList["Artifact: Unit Queue (Prioritized)"]:::artifact
+                DistillEntry --> DepGraph["Process: pydeps<br>(Inter-Module Graph)"]:::process
+                DepGraph --> ASTAnalysis["Process: AST Analysis<br>(Intra-Module Symbols)"]:::process
+                ASTAnalysis --> TopoSort["Process: Topological Sort<br>(Leaf-First Ordering)"]:::process
+                TopoSort --> UnitList["Artifact: Unit Queue<br>(UnitWorkItem list)"]:::artifact
+                UnitList --> WorkspaceCopy["Process: Copy prototype/<br>to production/"]:::process
+                WorkspaceCopy --> ProductionArtifact["Artifact: production/ workspace"]:::artifact
             end
     
-            UnitList --> UnitIterator{"Process: Next Unit?"}:::process
+            ProductionArtifact --> UnitIterator{"Process: Next Unit?"}:::process
     
             %% =========================================================
             %% SCOPE: UNIT (Runs ONCE per Unit)
@@ -308,16 +311,38 @@
     <h4>Phase 4: The Distillation Loop</h4>
     <ul>
         <li><strong>Cardinality:</strong> Runs <strong>once per refined prototype</strong>.</li>
-        <li><strong>Goal:</strong> Decompose the refined `core` module into discrete, atomic units, ready for reconstruction via TDD.</li>
-        <li><strong>Input:</strong> The architecturally refined code (<code>src/core/</code>).</li>
+        <li><strong>Goal:</strong> Decompose the entire refined prototype package into discrete, atomic units (symbols), topologically ordered for reconstruction via TDD.</li>
+        <li><strong>Input:</strong> The architecturally refined code in <code>prototype/src/&lt;package&gt;/</code>.</li>
         <li><strong>Process:</strong>
             <ol>
-                <li><strong>Dependency Grapher:</strong> Analyzes the `core` module to build a full call graph of functions and classes.</li>
-                <li><strong>Oracle Generator:</strong> For each identified unit (starting with leaf nodes in a Deep-First Search traversal), the system dynamically traces its execution using inputs from the original <code>fixtures.json</code> or fuzzed data. It captures the exact arguments passed to the unit and its return values.</li>
+                <li><strong>Inter-Module Dependency Graph:</strong> Uses <code>pydeps --show-deps --nodot</code> to analyze the package and build a module-level import graph.</li>
+                <li><strong>Module Topological Sort:</strong> Sorts modules leaf-first (modules with no internal imports first, then modules whose dependencies have all been processed).</li>
+                <li><strong>Intra-Module Symbol Analysis:</strong> For each module, uses Python's <code>ast</code> module to extract all top-level symbols:
+                    <ul>
+                        <li>Functions (<code>FunctionDef</code>, <code>AsyncFunctionDef</code>)</li>
+                        <li>Classes (<code>ClassDef</code>)</li>
+                        <li>Constants (<code>Assign</code>, <code>AnnAssign</code>)</li>
+                        <li>Imports (<code>Import</code>, <code>ImportFrom</code>)</li>
+                    </ul>
+                    For each function/class, analyzes the body to identify dependencies (names used that are not parameters, locals, or builtins).
+                </li>
+                <li><strong>Symbol Topological Sort:</strong> Within each module, sorts symbols leaf-first based on internal dependencies.</li>
+                <li><strong>Workspace Copy:</strong> Copies <code>prototype/</code> to <code>production/</code> to create a fresh workspace for the Ratchet cycle.</li>
             </ol>
         </li>
-        <li><strong>Mechanistic Check:</strong> This phase is primarily deterministic. Errors in graph generation or tracing halt the system for human intervention.</li>
-        <li><strong>Output:</strong> A prioritized <code>Unit Queue</code>. Each item in the queue represents a unit (e.g., a function) and contains a list of test definitions (description, precise input, and precise expected output derived from the Oracle).</li>
+        <li><strong>Mechanistic Check:</strong> This phase is primarily deterministic. Errors in graph generation or AST parsing halt the system for human intervention.</li>
+        <li><strong>Output:</strong> A prioritized <code>Unit Queue</code> of <code>UnitWorkItem</code> objects, each containing:
+            <ul>
+                <li><code>name</code>: Fully qualified name (e.g., <code>pkg.module.function</code>)</li>
+                <li><code>symbol_type</code>: One of "function", "class", "constant", "import"</li>
+                <li><code>module_path</code>: Absolute path to the source file</li>
+                <li><code>line_number</code> / <code>end_line_number</code>: Location in file</li>
+                <li><code>code</code>: Source code snippet</li>
+                <li><code>dependencies</code>: List of local symbol names this unit depends on</li>
+                <li><code>tests</code>: Empty list (populated by Oracle Generator in a future phase)</li>
+            </ul>
+        </li>
+        <li><strong>Note:</strong> The <strong>Oracle Generator</strong> (dynamic tracing to capture I/O for test generation) is deferred to a later phase.</li>
     </ul>
 
     <h3>3.2. Unit-Level Scope (1x per Unit)</h3>
