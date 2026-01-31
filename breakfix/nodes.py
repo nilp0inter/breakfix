@@ -24,9 +24,14 @@ class TestCase:
 
 @dataclass
 class UnitWorkItem:
-    name: str
-    tests: List[TestCase]
-    code: str = ""  # Stores the evolving code for this unit
+    name: str                                              # FQN, e.g., "thedump.parser.parse_line"
+    tests: List[TestCase] = field(default_factory=list)    # Populated by Oracle later
+    code: str = ""                                         # Source code of the unit
+    module_path: str = ""                                  # e.g., "/path/to/parser.py"
+    line_number: int = 0                                   # Start line in module
+    end_line_number: int = 0                               # End line in module
+    symbol_type: str = ""                                  # "function", "class", "constant", "import"
+    dependencies: List[str] = field(default_factory=list)  # Local names of dependencies
 
 
 @dataclass
@@ -220,10 +225,32 @@ async def phase_refinement_node(state: ProjectState, *, deps):
 
 
 async def phase_distillation_node(state: ProjectState, *, deps):
-    raise NotImplementedError
+    """Phase 4: Decompose refined prototype into atomic units."""
     logging.info("[OUTER] Phase 4: Distillation")
-    units = deps.process_dependency_graph(state.refined_arch)
-    state.unit_queue = units
+
+    proto_dir = Path(state.working_directory) / "prototype"
+
+    # Step 1: Run distiller to analyze prototype
+    result = await deps.run_distiller(
+        proto_dir=proto_dir,
+        package_name=state.project_metadata.package_name,
+    )
+
+    if not result.success:
+        return NodeError(error=f"Distillation failed: {result.error}")
+
+    logging.info(f"[OUTER] Distilled {len(result.units)} units")
+    state.unit_queue = result.units
+
+    # Step 2: Copy prototype to production for ratchet cycle
+    logging.info("[OUTER] Copying prototype to production workspace")
+    copy_result = await deps.copy_prototype_to_production(
+        Path(state.working_directory)
+    )
+
+    if not copy_result.success:
+        return NodeError(error=f"Failed to copy prototype to production: {copy_result.error}")
+
     return MoveToNode.with_parameters(unit_orchestrator_node, state)
 
 

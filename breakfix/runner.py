@@ -13,7 +13,9 @@ from breakfix.agents import (
     review_architecture,
     run_refactorer,
 )
+from breakfix.distiller import run_distiller
 from breakfix.graph import run_graph, NodeErrored, NodeFailed
+from breakfix.workspace import copy_prototype_to_production
 from breakfix.nodes import (
     TestCase,
     UnitWorkItem,
@@ -148,11 +150,9 @@ async def run(working_directory: str):
         run_refactorer=run_refactorer,
         review_architecture=review_architecture,
 
-        # Phase 4+ Agents & Checks (legacy mock stubs)
-        process_dependency_graph=lambda x: [
-            UnitWorkItem("Cart", [TestCase(1, "Add Item"), TestCase(2, "Remove Item")]),
-            UnitWorkItem("TaxCalc", [TestCase(3, "VAT Calc")])
-        ],
+        # Phase 4: Distillation
+        run_distiller=run_distiller,
+        copy_prototype_to_production=copy_prototype_to_production,
 
         # Phase 5 Agents & Checks
         agent_tester=lambda u, t: "test_fn()",
