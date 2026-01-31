@@ -201,20 +201,26 @@ async def phase_prototyping_node(state: ProjectState, *, deps):
 
 
 async def phase_refinement_node(state: ProjectState, *, deps):
-    raise NotImplementedError
+    """Phase 3: Refactor prototype into Functional Core / Imperative Shell architecture."""
     logging.info("[OUTER] Phase 3: Refinement")
-    refined_code = deps.agent_architect(state.prototype_code)
-    is_clean, msg = deps.check_architectural_taint(refined_code)
 
-    if not is_clean:
-        logging.warning(f"Arch Violation: {msg}")
-        return MoveToNode.with_parameters(phase_refinement_node, state)
+    result = await deps.run_refactorer(
+        working_dir=state.working_directory,
+        package_name=state.project_metadata.package_name,
+        run_e2e_test=deps.run_prototype_e2e_test,
+        review_architecture=deps.review_architecture,
+    )
 
-    state.refined_arch = refined_code
+    if not result.success:
+        return NodeError(error=f"Refinement failed: {result.error}")
+
+    logging.info(f"[OUTER] Refinement completed in {result.iterations} iteration(s)")
+    state.refined_arch = "FCIS applied"
     return MoveToNode.with_parameters(phase_distillation_node, state)
 
 
 async def phase_distillation_node(state: ProjectState, *, deps):
+    raise NotImplementedError
     logging.info("[OUTER] Phase 4: Distillation")
     units = deps.process_dependency_graph(state.refined_arch)
     state.unit_queue = units

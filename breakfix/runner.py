@@ -5,7 +5,14 @@ from argparse import Namespace
 from dataclasses import dataclass
 from pathlib import Path
 
-from breakfix.agents import create_analyst, run_e2e_builder, analyze_interface, run_prototyper
+from breakfix.agents import (
+    create_analyst,
+    run_e2e_builder,
+    analyze_interface,
+    run_prototyper,
+    review_architecture,
+    run_refactorer,
+)
 from breakfix.graph import run_graph, NodeErrored, NodeFailed
 from breakfix.nodes import (
     TestCase,
@@ -137,11 +144,11 @@ async def run(working_directory: str):
         run_prototyper=run_prototyper,
         run_prototype_e2e_test=run_prototype_e2e_test,
 
-        # Phase 2-4 Agents & Checks (legacy mock stubs)
-        agent_prototyper=lambda x: "def proto(): pass",
-        check_e2e_harness=lambda x: (True, "") if sim_check(0.7) else (False, "404 Error"),
-        agent_architect=lambda x: "src/core",
-        check_architectural_taint=lambda x: (True, "") if sim_check(0.8) else (False, "import sys"),
+        # Phase 3: Refinement
+        run_refactorer=run_refactorer,
+        review_architecture=review_architecture,
+
+        # Phase 4+ Agents & Checks (legacy mock stubs)
         process_dependency_graph=lambda x: [
             UnitWorkItem("Cart", [TestCase(1, "Add Item"), TestCase(2, "Remove Item")]),
             UnitWorkItem("TaxCalc", [TestCase(3, "VAT Calc")])
