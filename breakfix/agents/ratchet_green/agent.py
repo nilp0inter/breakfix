@@ -13,8 +13,18 @@ from claude_agent_sdk import (
     AssistantMessage,
     UserMessage,
     TextBlock,
+    HookMatcher,
+    PreToolUseHookInput,
+    HookContext,
 )
 from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
+
+from .coverage import (
+    run_pytest_with_coverage,
+    check_coverage_intersection,
+    save_baseline,
+    format_coverage_feedback,
+)
 
 if TYPE_CHECKING:
     from breakfix.nodes import UnitWorkItem, TestCase
@@ -54,38 +64,57 @@ def permission_handler(
     - NO access to the test file (prevents reading the expected behavior)
     - No execution permissions
     """
+    print(f"[PERMISSION-GREEN] tool={tool_name} input={input_data}")
+    print(f"[PERMISSION-GREEN] unit_file={unit_file_path} test_file={test_file_path}")
+
     # Block all execution tools
     if tool_name in ("Bash", "BashOutput", "KillBash"):
-        return PermissionResultDeny(
+        result = PermissionResultDeny(
             message="Execution not allowed in Green phase. Only implement code.",
         )
+        print(f"[PERMISSION-GREEN] DENY (execution): {result.message}")
+        return result
+
+    resolved_test_file = test_file_path.resolve() if test_file_path else None
+    resolved_unit_file = unit_file_path.resolve()
+    print(f"[PERMISSION-GREEN] resolved_unit_file={resolved_unit_file} resolved_test_file={resolved_test_file}")
 
     # Block ALL access to test files
     if tool_name in ("Read", "Write", "Edit"):
         file_path = input_data.get("file_path", "")
         if file_path:
             path = Path(file_path).resolve()
+            print(f"[PERMISSION-GREEN] Checking test file access: {path} == {resolved_test_file} ? {path == resolved_test_file}")
             # Block access to the specific test file path
-            if test_file_path and str(path) == str(test_file_path.resolve()):
-                return PermissionResultDeny(
+            if resolved_test_file and path == resolved_test_file:
+                result = PermissionResultDeny(
                     message="Access denied to test file. The Green agent cannot access test code.",
                 )
+                print(f"[PERMISSION-GREEN] DENY (test file): {result.message}")
+                return result
 
     # For Write/Edit operations, only allow the unit implementation file
     if tool_name in ("Write", "Edit"):
         file_path = input_data.get("file_path", "")
         if not file_path:
-            return PermissionResultDeny(message="No file path provided")
+            result = PermissionResultDeny(message="No file path provided")
+            print(f"[PERMISSION-GREEN] DENY (no path): {result.message}")
+            return result
 
         path = Path(file_path).resolve()
-        if path != unit_file_path.resolve():
-            return PermissionResultDeny(
+        print(f"[PERMISSION-GREEN] Checking write: {path} == {resolved_unit_file} ? {path == resolved_unit_file}")
+        if path != resolved_unit_file:
+            result = PermissionResultDeny(
                 message=f"Write/Edit only allowed for {unit_file_path.name}. You can only modify the implementation file.",
             )
+            print(f"[PERMISSION-GREEN] DENY (not unit file): {result.message}")
+            return result
 
     # Allow Read for any file (except test file blocked above)
     # Allow Glob/Grep for discovery
-    return PermissionResultAllow(updated_input=input_data)
+    result = PermissionResultAllow(updated_input=input_data)
+    print(f"[PERMISSION-GREEN] ALLOW")
+    return result
 
 
 DEVELOPER_SYSTEM_PROMPT = """You are a TDD Developer agent. Your ONLY job is to implement the MINIMAL code to make the failing test pass.
@@ -169,6 +198,7 @@ async def run_ratchet_green(
     test_case: "TestCase",
     test_file_path: str,
     production_dir: Path,
+    working_dir: Path,
     initial_failure: str = "",
     max_retries: int = MAX_RATCHET_GREEN_RETRIES,
 ) -> RatchetGreenResult:
@@ -180,6 +210,7 @@ async def run_ratchet_green(
         test_case: The test case to satisfy
         test_file_path: Path to the test file (to block access)
         production_dir: Path to production/ directory
+        working_dir: Project working directory (for coverage baseline storage)
         initial_failure: Pytest output showing the test failure (from Red phase)
         max_retries: Maximum retry attempts
 
@@ -198,16 +229,46 @@ async def run_ratchet_green(
         test_file = test_file_path
     test_file_abs = production_dir / test_file
 
-    # Create permission handler with paths bound
-    def check_permission(tool_name, input_data):
-        return permission_handler(tool_name, input_data, unit_file_path, test_file_abs)
+    # Create PreToolUse hook for permissions
+    async def pre_tool_use_hook(
+        hook_input: dict,
+        tool_use_id: str | None,
+        context: HookContext,
+    ) -> dict:
+        """PreToolUse hook to enforce permissions for Green agent."""
+        tool_name = hook_input.get("tool_name", "")
+        tool_input = hook_input.get("tool_input", {})
+        print(f"[HOOK-GREEN] PreToolUse: tool={tool_name}, input={tool_input}")
+
+        result = permission_handler(tool_name, tool_input, unit_file_path, test_file_abs)
+
+        if isinstance(result, PermissionResultDeny):
+            print(f"[HOOK-GREEN] BLOCKING: {result.message}")
+            return {
+                "continue_": False,
+                "decision": "block",
+                "reason": result.message,
+            }
+
+        print(f"[HOOK-GREEN] ALLOWING")
+        return {"continue_": True}
+
+    # Create hook matcher for all tools
+    hook_matchers = [
+        HookMatcher(
+            matcher=None,  # Match all tools
+            hooks=[pre_tool_use_hook],
+            timeout=60.0,
+        )
+    ]
 
     options = ClaudeAgentOptions(
         cwd=str(production_dir),
         allowed_tools=["Read", "Write", "Edit", "Glob", "Grep"],
-        can_use_tool=check_permission,
+        hooks={"PreToolUse": hook_matchers},
         permission_mode="acceptEdits",
         enable_file_checkpointing=True,
+        extra_args={"replay-user-messages": None},  # Required for rewind_files()
         max_turns=20,
     )
 
@@ -270,8 +331,68 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
                 pytest_result = run_pytest(production_dir)
 
                 if pytest_result.success:
-                    logger.info(f"[RATCHET-GREEN] All tests passed!")
-                    return RatchetGreenResult(success=True, retries=retries)
+                    logger.info(f"[RATCHET-GREEN] All tests passed! Checking coverage...")
+
+                    # Run pytest with coverage to check for dead code
+                    cov_success, coverage_data, cov_output = run_pytest_with_coverage(
+                        production_dir,
+                        unit.module_path,
+                    )
+
+                    if coverage_data is None:
+                        # Coverage collection failed - abort
+                        logger.error("[RATCHET-GREEN] Coverage check failed: no coverage data")
+                        return RatchetGreenResult(
+                            success=False,
+                            error=f"Coverage data could not be collected. Output:\n{cov_output[:500]}",
+                            retries=retries,
+                        )
+
+                    dead_code_lines = check_coverage_intersection(
+                        coverage_data,
+                        unit.module_path,
+                        unit.line_number,
+                        unit.end_line_number,
+                    )
+
+                    if not dead_code_lines:
+                        # Coverage check passed!
+                        logger.info("[RATCHET-GREEN] Coverage check passed!")
+                        save_baseline(
+                            working_dir,
+                            unit.name,
+                            coverage_data,
+                            unit.module_path,
+                            unit.line_number,
+                            unit.end_line_number,
+                        )
+                        return RatchetGreenResult(success=True, retries=retries)
+
+                    # Coverage violation - need to fix dead code
+                    logger.warning(f"[RATCHET-GREEN] Dead code detected on lines: {dead_code_lines}")
+                    retries += 1
+
+                    if retries < max_retries:
+                        coverage_feedback = format_coverage_feedback(
+                            dead_code_lines,
+                            unit.module_path,
+                            production_dir,
+                        )
+                        logger.info("[RATCHET-GREEN] Sending coverage feedback to agent")
+                        await client.query(coverage_feedback)
+                        continue  # Agent will fix, then we re-run tests AND coverage
+                    else:
+                        # Max retries exceeded - rewind and fail
+                        logger.error(f"[RATCHET-GREEN] Max retries exceeded (dead code)")
+                        if checkpoint_id:
+                            logger.info(f"[RATCHET-GREEN] Rewinding to checkpoint {checkpoint_id}")
+                            await client.rewind_files(checkpoint_id)
+
+                        return RatchetGreenResult(
+                            success=False,
+                            error=f"Dead code on lines {dead_code_lines} after {retries} attempts",
+                            retries=retries,
+                        )
 
                 # Tests failed - send output back to agent
                 retries += 1

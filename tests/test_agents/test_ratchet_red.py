@@ -17,6 +17,13 @@ from breakfix.agents.ratchet_red.validator import (
     ValidationResult,
     create_test_validator,
 )
+from breakfix.agents.ratchet_red.arbiter import (
+    ArbiterDecision,
+    arbitrate_test,
+    create_arbiter,
+    _mark_offending_test,
+    ARBITER_SYSTEM_PROMPT,
+)
 from breakfix.nodes import UnitWorkItem, TestCase
 
 
@@ -607,7 +614,7 @@ class TestExtractSignature:
         """Should handle class definitions."""
         code = """class Calculator:
     \"\"\"A simple calculator.\"\"\"
-    
+
     def __init__(self):
         self.value = 0"""
 
@@ -616,4 +623,340 @@ class TestExtractSignature:
         assert "class Calculator:" in result
         assert "A simple calculator" in result
         assert "self.value = 0" not in result
+
+
+# ============================================================================
+# Test Arbiter Tests
+# ============================================================================
+
+
+class TestArbiterDecision:
+    """Tests for ArbiterDecision model."""
+
+    def test_keep_test_when_confidence_true(self):
+        """Should create decision to keep when confidence is true."""
+        decision = ArbiterDecision(
+            keep_test=True,
+            confidence_value=True,
+            communication_value=False,
+            reasoning="Test protects against edge case"
+        )
+
+        assert decision.keep_test
+        assert decision.confidence_value
+        assert not decision.communication_value
+        assert "edge case" in decision.reasoning
+
+    def test_keep_test_when_communication_true(self):
+        """Should create decision to keep when communication is true."""
+        decision = ArbiterDecision(
+            keep_test=True,
+            confidence_value=False,
+            communication_value=True,
+            reasoning="Test documents important use case"
+        )
+
+        assert decision.keep_test
+        assert not decision.confidence_value
+        assert decision.communication_value
+
+    def test_discard_test_when_both_false(self):
+        """Should create decision to discard when both criteria are false."""
+        decision = ArbiterDecision(
+            keep_test=False,
+            confidence_value=False,
+            communication_value=False,
+            reasoning="Test is redundant with existing tests"
+        )
+
+        assert not decision.keep_test
+        assert not decision.confidence_value
+        assert not decision.communication_value
+
+    def test_default_reasoning(self):
+        """Should have empty string as default reasoning."""
+        decision = ArbiterDecision(
+            keep_test=True,
+            confidence_value=True,
+            communication_value=True,
+        )
+
+        assert decision.reasoning == ""
+
+
+class TestMarkOffendingTest:
+    """Tests for _mark_offending_test helper function."""
+
+    def test_marks_simple_function(self):
+        """Should insert marker before test function definition."""
+        test_content = """import pytest
+
+def test_existing():
+    assert True
+
+def test_offending():
+    assert 1 + 1 == 2
+
+def test_another():
+    assert False
+"""
+        result = _mark_offending_test(test_content, "test_offending")
+
+        assert "# >>> EVALUATING THIS TEST <<<" in result
+        lines = result.split('\n')
+        marker_idx = next(i for i, line in enumerate(lines) if "EVALUATING THIS TEST" in line)
+        assert "def test_offending" in lines[marker_idx + 1]
+
+    def test_marks_async_function(self):
+        """Should mark async test functions."""
+        test_content = """import pytest
+
+async def test_async_offending():
+    result = await something()
+    assert result == 42
+"""
+        result = _mark_offending_test(test_content, "test_async_offending")
+
+        assert "# >>> EVALUATING THIS TEST <<<" in result
+        lines = result.split('\n')
+        marker_idx = next(i for i, line in enumerate(lines) if "EVALUATING THIS TEST" in line)
+        assert "async def test_async_offending" in lines[marker_idx + 1]
+
+    def test_handles_function_with_space_before_paren(self):
+        """Should handle function definitions with space before parenthesis."""
+        test_content = """def test_with_space ():
+    assert True
+"""
+        result = _mark_offending_test(test_content, "test_with_space")
+
+        assert "# >>> EVALUATING THIS TEST <<<" in result
+
+    def test_does_not_mark_other_functions(self):
+        """Should only mark the specified function."""
+        test_content = """def test_first():
+    pass
+
+def test_second():
+    pass
+"""
+        result = _mark_offending_test(test_content, "test_second")
+
+        lines = result.split('\n')
+        # Count markers - should be exactly one
+        marker_count = sum(1 for line in lines if "EVALUATING THIS TEST" in line)
+        assert marker_count == 1
+
+        # Verify marker is before test_second, not test_first
+        marker_idx = next(i for i, line in enumerate(lines) if "EVALUATING THIS TEST" in line)
+        assert "test_second" in lines[marker_idx + 1]
+
+    def test_preserves_all_content(self):
+        """Should preserve all original content."""
+        test_content = """# Header comment
+import pytest
+
+def test_target():
+    \"\"\"Docstring.\"\"\"
+    assert True
+"""
+        result = _mark_offending_test(test_content, "test_target")
+
+        assert "# Header comment" in result
+        assert "import pytest" in result
+        assert '"""Docstring."""' in result
+        assert "assert True" in result
+
+
+class TestCreateArbiter:
+    """Tests for create_arbiter function."""
+
+    def test_returns_agent(self):
+        """Should return a Pydantic AI Agent."""
+        with patch("breakfix.agents.ratchet_red.arbiter.Agent") as mock_agent_class:
+            mock_agent_class.return_value = MagicMock()
+            agent = create_arbiter()
+
+            mock_agent_class.assert_called_once()
+            call_kwargs = mock_agent_class.call_args
+            assert call_kwargs.kwargs["output_type"] == ArbiterDecision
+
+    def test_custom_model(self):
+        """Should accept custom model parameter."""
+        with patch("breakfix.agents.ratchet_red.arbiter.Agent") as mock_agent_class:
+            mock_agent_class.return_value = MagicMock()
+            create_arbiter(model="openai:gpt-4")
+
+            call_args = mock_agent_class.call_args
+            assert call_args.args[0] == "openai:gpt-4"
+
+
+class TestArbiterSystemPrompt:
+    """Tests for ARBITER_SYSTEM_PROMPT."""
+
+    def test_mentions_kent_beck(self):
+        """Should reference Kent Beck's TDD principles."""
+        assert "kent beck" in ARBITER_SYSTEM_PROMPT.lower()
+
+    def test_mentions_confidence_criterion(self):
+        """Should explain confidence criterion."""
+        assert "confidence" in ARBITER_SYSTEM_PROMPT.lower()
+
+    def test_mentions_communication_criterion(self):
+        """Should explain communication criterion."""
+        assert "communication" in ARBITER_SYSTEM_PROMPT.lower()
+
+    def test_mentions_decision_rules(self):
+        """Should mention decision rules about when to keep/discard."""
+        lower_prompt = ARBITER_SYSTEM_PROMPT.lower()
+        assert "discard" in lower_prompt
+        assert "keep" in lower_prompt
+
+
+class TestArbitrateTest:
+    """Tests for arbitrate_test function."""
+
+    @pytest.fixture
+    def temp_tests_dir(self):
+        """Create temporary tests directory with test file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            tests_dir = tmpdir / "tests"
+            tests_dir.mkdir()
+
+            # Create a test file with multiple tests
+            test_file = tests_dir / "test_core.py"
+            test_file.write_text('''"""Tests for core module."""
+import pytest
+from mypackage.core import calculate
+
+def test_calculate_positive():
+    """Test adding two positive numbers."""
+    result = calculate(2, 3)
+    assert result == 5
+
+def test_calculate_negative():
+    """Test adding negative numbers."""
+    result = calculate(-1, -2)
+    assert result == -3
+
+def test_calculate_zero():
+    """Test with zero values."""
+    result = calculate(0, 0)
+    assert result == 0
+''')
+
+            yield tmpdir
+
+    @pytest.mark.anyio
+    async def test_returns_keep_decision(self, temp_tests_dir):
+        """Should return keep decision when arbiter says keep."""
+        mock_result = MagicMock()
+        mock_result.output = ArbiterDecision(
+            keep_test=True,
+            confidence_value=True,
+            communication_value=False,
+            reasoning="Test adds confidence for edge case"
+        )
+
+        mock_agent = AsyncMock()
+        mock_agent.run = AsyncMock(return_value=mock_result)
+
+        with patch("breakfix.agents.ratchet_red.arbiter.create_arbiter", return_value=mock_agent):
+            decision = await arbitrate_test(
+                test_spec="Scenario: Zero values\nExpected: Returns 0",
+                test_file_path="tests/test_core.py::test_calculate_zero",
+                test_function_name="test_calculate_zero",
+                tests_dir=temp_tests_dir / "tests",
+            )
+
+        assert decision.keep_test
+        assert decision.confidence_value
+
+    @pytest.mark.anyio
+    async def test_returns_discard_decision(self, temp_tests_dir):
+        """Should return discard decision when test is truly redundant."""
+        mock_result = MagicMock()
+        mock_result.output = ArbiterDecision(
+            keep_test=False,
+            confidence_value=False,
+            communication_value=False,
+            reasoning="Test is completely redundant with test_calculate_positive"
+        )
+
+        mock_agent = AsyncMock()
+        mock_agent.run = AsyncMock(return_value=mock_result)
+
+        with patch("breakfix.agents.ratchet_red.arbiter.create_arbiter", return_value=mock_agent):
+            decision = await arbitrate_test(
+                test_spec="Same as positive test",
+                test_file_path="tests/test_core.py::test_calculate_zero",
+                test_function_name="test_calculate_zero",
+                tests_dir=temp_tests_dir / "tests",
+            )
+
+        assert not decision.keep_test
+
+    @pytest.mark.anyio
+    async def test_handles_missing_test_file(self, temp_tests_dir):
+        """Should default to keep when test file cannot be found."""
+        decision = await arbitrate_test(
+            test_spec="Some spec",
+            test_file_path="tests/nonexistent.py::test_something",
+            test_function_name="test_something",
+            tests_dir=temp_tests_dir / "tests",
+        )
+
+        # Should default to keep when file cannot be found
+        assert decision.keep_test
+        assert "not found" in decision.reasoning.lower() or "could not read" in decision.reasoning.lower()
+
+    @pytest.mark.anyio
+    async def test_handles_arbiter_error(self, temp_tests_dir):
+        """Should default to keep when arbiter encounters an error."""
+        mock_agent = AsyncMock()
+        mock_agent.run = AsyncMock(side_effect=Exception("LLM API error"))
+
+        with patch("breakfix.agents.ratchet_red.arbiter.create_arbiter", return_value=mock_agent):
+            decision = await arbitrate_test(
+                test_spec="Some spec",
+                test_file_path="tests/test_core.py::test_calculate_zero",
+                test_function_name="test_calculate_zero",
+                tests_dir=temp_tests_dir / "tests",
+            )
+
+        # Should default to keep on error
+        assert decision.keep_test
+        assert "error" in decision.reasoning.lower()
+
+
+class TestRatchetRedResultSkippedGreen:
+    """Tests for skipped_green field in RatchetRedResult."""
+
+    def test_default_skipped_green_is_false(self):
+        """Should have skipped_green=False by default."""
+        result = RatchetRedResult(success=True)
+
+        assert not result.skipped_green
+
+    def test_skipped_green_can_be_true(self):
+        """Should allow setting skipped_green=True."""
+        result = RatchetRedResult(
+            success=True,
+            test_file_path="tests/test_core.py::test_something",
+            skipped_green=True,
+        )
+
+        assert result.skipped_green
+        assert result.success
+
+    def test_skipped_green_with_empty_path(self):
+        """Should allow skipped_green=True with empty test_file_path (for discarded tests)."""
+        result = RatchetRedResult(
+            success=True,
+            test_file_path="",
+            skipped_green=True,
+        )
+
+        assert result.skipped_green
+        assert result.test_file_path == ""
 

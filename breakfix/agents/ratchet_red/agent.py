@@ -13,10 +13,14 @@ from claude_agent_sdk import (
     AssistantMessage,
     UserMessage,
     TextBlock,
+    HookMatcher,
+    PreToolUseHookInput,
+    HookContext,
 )
 from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
 
 from .validator import validate_test
+from .arbiter import arbitrate_test
 
 if TYPE_CHECKING:
     from breakfix.nodes import UnitWorkItem, TestCase
@@ -35,6 +39,7 @@ class RatchetRedResult:
     error: str = ""
     retries: int = 0
     pytest_failure: str = ""  # Output from running pytest (test should fail)
+    skipped_green: bool = False  # True if test was kept by arbiter but Green phase should be skipped
 
 
 @dataclass
@@ -91,48 +96,82 @@ def permission_handler(
     Custom permission handler for Tester agent.
 
     - Full Read/Write/Edit permissions on tests/ directory
-    - Read-only access to rest of project
+    - Read-only access to rest of project (EXCEPT the unit implementation file)
     - NO access to unit implementation file (reserved for Green agent)
     - No execution permissions
     """
+    print(f"[PERMISSION-RED] tool={tool_name} input={input_data}")
+    print(f"[PERMISSION-RED] tests_dir={tests_dir} unit_file={unit_file_path}")
+
     # Block all execution tools
     if tool_name in ("Bash", "BashOutput", "KillBash"):
-        return PermissionResultDeny(
+        result = PermissionResultDeny(
             message="Execution not allowed in Red phase. Only write tests, do not run them.",
         )
+        print(f"[PERMISSION-RED] DENY (execution): {result.message}")
+        return result
+
+    resolved_unit_file = unit_file_path.resolve()
+    print(f"[PERMISSION-RED] resolved_unit_file={resolved_unit_file}")
 
     # Block ALL access to the unit implementation file
     if tool_name in ("Read", "Write", "Edit"):
         file_path = input_data.get("file_path", "")
         if file_path:
             path = Path(file_path).resolve()
-            if path == unit_file_path.resolve():
-                return PermissionResultDeny(
+            print(f"[PERMISSION-RED] Checking file access: {path} == {resolved_unit_file} ? {path == resolved_unit_file}")
+            if path == resolved_unit_file:
+                result = PermissionResultDeny(
                     message=f"Access denied to {unit_file_path.name}. The Red agent cannot access the implementation file.",
                 )
+                print(f"[PERMISSION-RED] DENY (unit file): {result.message}")
+                return result
+
+    # Block Grep from searching in the unit implementation file
+    if tool_name == "Grep":
+        grep_path = input_data.get("path", "")
+        if grep_path:
+            path = Path(grep_path).resolve()
+            print(f"[PERMISSION-RED] Checking grep path: {path} == {resolved_unit_file} ? {path == resolved_unit_file}")
+            # Block if grepping the exact file
+            if path == resolved_unit_file:
+                result = PermissionResultDeny(
+                    message=f"Cannot search in {unit_file_path.name}. The Red agent cannot access the implementation file.",
+                )
+                print(f"[PERMISSION-RED] DENY (grep unit file): {result.message}")
+                return result
 
     # For file write operations, only allow in tests/ directory
     if tool_name in ("Write", "Edit"):
         file_path = input_data.get("file_path", "")
         if not file_path:
-            return PermissionResultDeny(message="No file path provided")
+            result = PermissionResultDeny(message="No file path provided")
+            print(f"[PERMISSION-RED] DENY (no path): {result.message}")
+            return result
 
         path = Path(file_path).resolve()
-        if not str(path).startswith(str(tests_dir.resolve())):
-            return PermissionResultDeny(
+        tests_dir_resolved = tests_dir.resolve()
+        print(f"[PERMISSION-RED] Checking write: {path} starts with {tests_dir_resolved} ? {str(path).startswith(str(tests_dir_resolved))}")
+        if not str(path).startswith(str(tests_dir_resolved)):
+            result = PermissionResultDeny(
                 message=f"Write/Edit only allowed in {tests_dir}. You can only modify test files.",
             )
+            print(f"[PERMISSION-RED] DENY (outside tests): {result.message}")
+            return result
 
     # Allow Read for any file (except unit file blocked above)
-    # Allow Glob/Grep for discovery
-    return PermissionResultAllow(updated_input=input_data)
+    # Allow Glob for discovery (file names only, not contents)
+    # Allow Grep for other files (blocked above for unit file)
+    result = PermissionResultAllow(updated_input=input_data)
+    print(f"[PERMISSION-RED] ALLOW")
+    return result
 
 
 TESTER_SYSTEM_PROMPT = """You are a TDD Tester agent. Your ONLY job is to write exactly ONE failing test.
 
 RULES:
 1. Write EXACTLY ONE test function/method - no more, no less
-2. The test MUST fail against the current (stubbed) implementation
+2. The test MUST fail against the current implementation
 3. Put the test in the tests/ directory
 4. Follow existing test patterns in the project if any exist
 5. The test should verify the behavior described in the test case specification
@@ -144,8 +183,8 @@ DO NOT:
 - Modify any source files outside tests/
 - Run any commands or tests
 - Create multiple test files for one test case
+- Read or access implementation source files (src/)
 
-The test you write should fail because the implementation is stubbed with NotImplementedError.
 After writing the test, say "Test written" and stop.
 """
 
@@ -276,15 +315,46 @@ async def run_ratchet_red(
     # Create permission handler with tests_dir and unit_file_path bound
     # unit.module_path is relative to production_dir, so we need to make it absolute
     unit_file_path = production_dir / unit.module_path
-    def check_permission(tool_name, input_data):
-        return permission_handler(tool_name, input_data, tests_dir, unit_file_path)
+
+    async def pre_tool_use_hook(
+        hook_input: dict,
+        tool_use_id: str | None,
+        context: HookContext,
+    ) -> dict:
+        """PreToolUse hook to enforce permissions for Red agent."""
+        tool_name = hook_input.get("tool_name", "")
+        tool_input = hook_input.get("tool_input", {})
+        print(f"[HOOK-RED] PreToolUse: tool={tool_name}, input={tool_input}")
+
+        result = permission_handler(tool_name, tool_input, tests_dir, unit_file_path)
+
+        if isinstance(result, PermissionResultDeny):
+            print(f"[HOOK-RED] BLOCKING: {result.message}")
+            return {
+                "continue_": False,
+                "decision": "block",
+                "reason": result.message,
+            }
+
+        print(f"[HOOK-RED] ALLOWING")
+        return {"continue_": True}
+
+    # Create hook matcher for all tools
+    hook_matchers = [
+        HookMatcher(
+            matcher=None,  # Match all tools
+            hooks=[pre_tool_use_hook],
+            timeout=60.0,
+        )
+    ]
 
     options = ClaudeAgentOptions(
         cwd=str(production_dir),
         allowed_tools=["Read", "Write", "Edit", "Glob", "Grep"],
-        can_use_tool=check_permission,
+        hooks={"PreToolUse": hook_matchers},
         permission_mode="acceptEdits",
         enable_file_checkpointing=True,
+        extra_args={"replay-user-messages": None},  # Required for rewind_files()
         max_turns=15,
     )
 
@@ -320,7 +390,6 @@ You MUST name the test function EXACTLY: {test_function_name}
 2. Create or edit the test file at the EXACT path specified above
 3. Write exactly ONE test function with the EXACT name specified above
 4. The test should import and call the function/class being tested
-5. The implementation currently raises NotImplementedError, so the test will fail
 
 CRITICAL: Use the exact file path and function name specified above.
 
@@ -446,18 +515,55 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
                         # Test passed! This is wrong - it should fail
                         logger.warning("[RATCHET-RED] Test passed but should fail!")
 
+                        # After 2 tries, invoke the arbiter to decide keep/discard
+                        if retries >= 1:
+                            logger.info("[RATCHET-RED] Test passed twice. Invoking Test Arbiter...")
+
+                            decision = await arbitrate_test(
+                                test_spec=test_case.description,
+                                test_file_path=new_test_id,
+                                test_function_name=test_function_name,
+                                tests_dir=tests_dir,
+                            )
+
+                            if decision.keep_test:
+                                logger.info(
+                                    f"[RATCHET-RED] Arbiter: KEEP test "
+                                    f"(confidence={decision.confidence_value}, "
+                                    f"communication={decision.communication_value})"
+                                )
+                                logger.info(f"[RATCHET-RED] Reasoning: {decision.reasoning}")
+                                return RatchetRedResult(
+                                    success=True,
+                                    test_file_path=new_test_id,
+                                    retries=retries,
+                                    skipped_green=True,  # Skip Green phase
+                                )
+                            else:
+                                logger.info(f"[RATCHET-RED] Arbiter: DISCARD test - {decision.reasoning}")
+                                if checkpoint_id:
+                                    logger.info(f"[RATCHET-RED] Rewinding to checkpoint {checkpoint_id}")
+                                    await client.rewind_files(checkpoint_id)
+                                return RatchetRedResult(
+                                    success=True,  # Not a failure, just skipped
+                                    test_file_path="",
+                                    retries=retries,
+                                    skipped_green=True,  # Skip Green phase
+                                )
+
+                        # First try - rewind and retry
                         if checkpoint_id:
                             logger.info(f"[RATCHET-RED] Rewinding to checkpoint {checkpoint_id}")
                             await client.rewind_files(checkpoint_id)
 
                         retries += 1
                         if retries < max_retries:
-                            prompt = f"{base_prompt}\n\nPREVIOUS ATTEMPT FAILED: The test passed but it should FAIL against the stubbed implementation. Write a test that will fail when the function raises NotImplementedError."
+                            prompt = f"{base_prompt}\n\nPREVIOUS ATTEMPT FAILED: The test passed but it should FAIL. Ensure the test correctly verifies the expected behavior from the specification."
                             continue
 
                         return RatchetRedResult(
                             success=False,
-                            error="Test passed but should fail against stub",
+                            error="Test passed but should fail",
                             retries=retries,
                         )
 

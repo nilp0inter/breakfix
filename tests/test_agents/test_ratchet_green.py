@@ -231,3 +231,291 @@ class TestDeveloperSystemPrompt:
     def test_prompt_mentions_tdd(self):
         """Should mention TDD principles."""
         assert "tdd" in DEVELOPER_SYSTEM_PROMPT.lower()
+
+
+# ============================================================================
+# Coverage Check Tests
+# ============================================================================
+
+from breakfix.agents.ratchet_green.coverage import (
+    check_coverage_intersection,
+    get_baseline_path,
+    load_baseline,
+    save_baseline,
+    format_coverage_feedback,
+    run_pytest_with_coverage,
+    CoverageCheckResult,
+)
+
+
+class TestCheckCoverageIntersection:
+    """Tests for check_coverage_intersection function."""
+
+    def test_detects_dead_code_in_function_range(self):
+        """Should detect missing lines within the function range."""
+        coverage_data = {
+            "files": {
+                "src/pkg/core.py": {
+                    "executed_lines": [1, 2, 5, 6, 10, 11],
+                    "missing_lines": [7, 8, 9, 15, 16],
+                }
+            }
+        }
+
+        # Function is lines 5-12
+        dead_code = check_coverage_intersection(coverage_data, "src/pkg/core.py", 5, 12)
+
+        # Lines 7, 8, 9 are in range and missing
+        assert dead_code == {7, 8, 9}
+
+    def test_no_dead_code_when_all_covered(self):
+        """Should return empty set when all lines in range are covered."""
+        coverage_data = {
+            "files": {
+                "src/pkg/core.py": {
+                    "executed_lines": [5, 6, 7, 8, 9, 10],
+                    "missing_lines": [1, 2, 15, 16],
+                }
+            }
+        }
+
+        dead_code = check_coverage_intersection(coverage_data, "src/pkg/core.py", 5, 10)
+
+        assert dead_code == set()
+
+    def test_handles_missing_file(self):
+        """Should return empty set when file not found in coverage data."""
+        coverage_data = {
+            "files": {
+                "src/pkg/other.py": {
+                    "executed_lines": [1, 2, 3],
+                    "missing_lines": [],
+                }
+            }
+        }
+
+        dead_code = check_coverage_intersection(coverage_data, "src/pkg/core.py", 5, 10)
+
+        assert dead_code == set()
+
+    def test_matches_file_by_suffix(self):
+        """Should match file when paths have different prefixes."""
+        coverage_data = {
+            "files": {
+                "/absolute/path/to/src/pkg/core.py": {
+                    "executed_lines": [1, 2, 3],
+                    "missing_lines": [5, 6],
+                }
+            }
+        }
+
+        dead_code = check_coverage_intersection(coverage_data, "src/pkg/core.py", 1, 6)
+
+        assert dead_code == {5, 6}
+
+    def test_empty_coverage_data(self):
+        """Should handle empty coverage data gracefully."""
+        coverage_data = {"files": {}}
+
+        dead_code = check_coverage_intersection(coverage_data, "src/pkg/core.py", 5, 10)
+
+        assert dead_code == set()
+
+
+class TestBaselinePersistence:
+    """Tests for coverage baseline load/save functions."""
+
+    def test_get_baseline_path_sanitizes_fqn(self):
+        """Should sanitize FQN for filesystem-safe path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = get_baseline_path(Path(tmpdir), "pkg.module.function")
+
+            assert path.name == "pkg_module_function.json"
+            assert ".breakfix" in str(path)
+            assert "coverage" in str(path)
+
+    def test_load_baseline_returns_none_when_missing(self):
+        """Should return None when baseline file doesn't exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = load_baseline(Path(tmpdir), "pkg.module.function")
+
+            assert result is None
+
+    def test_save_and_load_baseline_roundtrip(self):
+        """Should persist and restore baseline correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            coverage_data = {
+                "files": {
+                    "src/pkg/core.py": {
+                        "executed_lines": [5, 6, 7, 10, 11],
+                        "missing_lines": [],
+                    }
+                }
+            }
+
+            save_baseline(
+                Path(tmpdir),
+                "pkg.core.my_func",
+                coverage_data,
+                "src/pkg/core.py",
+                start_line=5,
+                end_line=12,
+            )
+
+            loaded = load_baseline(Path(tmpdir), "pkg.core.my_func")
+
+            # Only lines 5-12 that were executed should be in baseline
+            assert loaded == {5, 6, 7, 10, 11}
+
+    def test_save_baseline_creates_directories(self):
+        """Should create necessary directories when saving baseline."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            coverage_data = {
+                "files": {
+                    "src/pkg/core.py": {
+                        "executed_lines": [1, 2, 3],
+                        "missing_lines": [],
+                    }
+                }
+            }
+
+            # Directories don't exist yet
+            save_baseline(
+                Path(tmpdir),
+                "pkg.core.my_func",
+                coverage_data,
+                "src/pkg/core.py",
+                start_line=1,
+                end_line=3,
+            )
+
+            # Should have created the file
+            baseline_path = get_baseline_path(Path(tmpdir), "pkg.core.my_func")
+            assert baseline_path.exists()
+
+
+class TestFormatCoverageFeedback:
+    """Tests for format_coverage_feedback function."""
+
+    def test_includes_line_numbers(self):
+        """Should include dead code line numbers in feedback."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            production_dir = Path(tmpdir)
+            source_dir = production_dir / "src" / "pkg"
+            source_dir.mkdir(parents=True)
+            source_file = source_dir / "core.py"
+            source_file.write_text("line 1\nline 2\nline 3\nline 4\nline 5\n")
+
+            feedback = format_coverage_feedback(
+                {3, 4},
+                "src/pkg/core.py",
+                production_dir,
+            )
+
+            assert "3" in feedback
+            assert "4" in feedback
+            assert "line 3" in feedback
+            assert "line 4" in feedback
+
+    def test_includes_instructions(self):
+        """Should include instructions for fixing dead code."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            feedback = format_coverage_feedback(
+                {5},
+                "src/pkg/core.py",
+                Path(tmpdir),
+            )
+
+            assert "dead code" in feedback.lower()
+            assert "remove" in feedback.lower() or "simplify" in feedback.lower()
+
+    def test_mentions_module_path(self):
+        """Should mention the module path in feedback."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            feedback = format_coverage_feedback(
+                {5},
+                "src/pkg/core.py",
+                Path(tmpdir),
+            )
+
+            assert "src/pkg/core.py" in feedback
+
+
+class TestRunPytestWithCoverage:
+    """Tests for run_pytest_with_coverage function."""
+
+    def test_returns_coverage_data_on_success(self):
+        """Should return coverage data when pytest succeeds."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            production_dir = Path(tmpdir)
+            venv_dir = production_dir / ".venv" / "bin"
+            venv_dir.mkdir(parents=True)
+            tests_dir = production_dir / "tests"
+            tests_dir.mkdir()
+
+            coverage_json = production_dir / "coverage.json"
+
+            # Mock subprocess.run to simulate pytest creating the coverage file
+            def mock_subprocess_run(*args, **kwargs):
+                # Simulate pytest-cov creating the coverage file (default output is coverage.json)
+                coverage_json.write_text('{"files": {"src/core.py": {"executed_lines": [1,2,3], "missing_lines": []}}}')
+                return MagicMock(
+                    returncode=0,
+                    stdout="1 passed",
+                    stderr=""
+                )
+
+            with patch("subprocess.run", side_effect=mock_subprocess_run):
+                success, coverage_data, output = run_pytest_with_coverage(
+                    production_dir,
+                    "src/core.py"
+                )
+
+            assert success
+            assert coverage_data is not None
+            assert "files" in coverage_data
+            assert "passed" in output
+
+    def test_returns_none_when_no_coverage_file(self):
+        """Should return None for coverage data when file not created."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            production_dir = Path(tmpdir)
+
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(
+                    returncode=0,
+                    stdout="1 passed",
+                    stderr=""
+                )
+
+                success, coverage_data, output = run_pytest_with_coverage(
+                    production_dir,
+                    "src/core.py"
+                )
+
+            assert success
+            assert coverage_data is None
+
+
+class TestCoverageCheckResult:
+    """Tests for CoverageCheckResult dataclass."""
+
+    def test_success_result(self):
+        """Should create a success result with no dead code."""
+        result = CoverageCheckResult(success=True)
+
+        assert result.success
+        assert result.dead_code_lines == set()
+        assert result.error == ""
+
+    def test_failure_result_with_dead_code(self):
+        """Should create a failure result with dead code lines."""
+        result = CoverageCheckResult(
+            success=False,
+            dead_code_lines={5, 6, 7},
+            error="Dead code detected"
+        )
+
+        assert not result.success
+        assert result.dead_code_lines == {5, 6, 7}
+        assert "Dead code" in result.error

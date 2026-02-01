@@ -373,6 +373,12 @@ async def ratchet_red_node(unit: UnitWorkItem, test: TestCase, *, deps):
         return NodeError(error=f"Red phase failed for {unit.name}: {result.error}")
 
     logging.info(f"[RATCHET-RED] Test written successfully: {result.test_file_path} (retries: {result.retries})")
+
+    # Check if Green phase should be skipped (arbiter decision)
+    if result.skipped_green:
+        logging.info(f"[RATCHET-RED] Skipping Green phase (arbiter decision)")
+        return MoveToNode.with_parameters(ratchet_iterator_node, unit)
+
     # Pass pytest failure output to Green agent
     return MoveToNode.with_parameters(ratchet_green_node, unit, test, result.pytest_failure)
 
@@ -390,6 +396,7 @@ async def ratchet_green_node(unit: UnitWorkItem, test: TestCase, pytest_failure:
         test_case=test,
         test_file_path=test_file_path,
         production_dir=Path(deps.working_directory) / "production",
+        working_dir=Path(deps.working_directory),
         initial_failure=pytest_failure,
     )
 
