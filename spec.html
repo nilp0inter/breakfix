@@ -30,141 +30,132 @@
 
     <h2>1. System Architecture Overview</h2>
 
-    <p>The system operates through eight primary phases, organized by their execution cardinality and scope:</p>
+    <p>The system operates through nine primary phases, organized by their execution cardinality and scope:</p>
     <ol>
         <li><strong>Specification Loop:</strong> (Project Scope) Captures user intent into a formal specification and project metadata.</li>
         <li><strong>E2E Test Builder:</strong> (Project Scope) Creates test harness using Claude Code.</li>
         <li><strong>Scaffolding:</strong> (Project Scope) Initializes Python project structure using PyScaffold.</li>
         <li><strong>Prototyping Loop:</strong> (Project Scope) Generates a working but unrefined prototype.</li>
         <li><strong>Refinement Loop:</strong> (Project Scope) Applies architectural separation (Functional Core/Imperative Shell).</li>
-        <li><strong>Distillation Loop:</strong> (Project Scope) Decomposes the refined prototype into atomic units and their test plans.</li>
+        <li><strong>Distillation Loop:</strong> (Project Scope) Decomposes the refined prototype into atomic units.</li>
+        <li><strong>Oracle Generator:</strong> (Unit Scope) Analyzes each unit and generates exhaustive test case specifications.</li>
         <li><strong>Ratchet Cycle:</strong> (Atomic Scope) Builds individual units using strict TDD, once per test case.</li>
         <li><strong>Crucible Cycle:</strong> (Unit Scope) Hardens and optimizes each unit after its construction.</li>
     </ol>
 
     <h3>1.1. Execution Flow Diagram</h3>
     <pre class="mermaid">
-        graph TD
-            %% Styling
-            classDef scope fill:#eceff1,stroke:#455a64,stroke-width:2px,stroke-dasharray: 5 5;
-            classDef agent fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
-            classDef check fill:#fff9c4,stroke:#fbc02d,stroke-width:2px;
-            classDef artifact fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,rx:5,ry:5;
-            classDef process fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
-            classDef ratchet fill:#ffebee,stroke:#c62828,stroke-width:4px;
-            classDef error fill:#ffebee,stroke:#c62828,stroke-width:1px,stroke-dasharray: 2 2;
-    
-            UserIdea(("User Idea")) --> SpecEntry
-    
-            %% =========================================================
-            %% SCOPE: PROJECT (Runs ONCE per Idea)
-            %% =========================================================
-            subgraph ProjectScope [Execution Scope: PROJECT - (Once per Idea)]
+        graph TD  
+            %% Styling  
+            classDef scope fill:#eceff1,stroke:#455a64,stroke-width:2px,stroke-dasharray: 5 5;  
+            classDef agent fill:#e1f5fe,stroke:#01579b,stroke-width:2px;  
+            classDef check fill:#fff9c4,stroke:#fbc02d,stroke-width:2px;  
+            classDef artifact fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;  
+            classDef process fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;  
+            classDef ratchet fill:#ffebee,stroke:#c62828,stroke-width:4px;  
+            classDef error fill:#ffebee,stroke:#c62828,stroke-width:1px,stroke-dasharray: 2 2;  
+
+            UserIdea(("User Idea")) --> SpecEntry  
+
+            %% =========================================================  
+            %% SCOPE: PROJECT
+            %% =========================================================  
+            subgraph ProjectScope ["Execution Scope: PROJECT - Once per Idea"]
                 direction TB
-                
-                %% PHASE 1: Specification
                 SpecEntry(Start Phase 1) --> Analyst["Agent: Analyst (Pydantic AI)"]:::agent
                 Analyst --> CheckSpec{"Check: Consistency"}:::check
-                CheckSpec -- "Error: Ambiguous<br>or Bad Format" --&gt; Analyst
-                CheckSpec -- OK --> ReqArtifact["Artifact: Spec + Fixtures + Metadata"]:::artifact
-
-                %% PHASE 1a: E2E Test Builder
+                CheckSpec -- "Error" --> Analyst
+                CheckSpec -- OK --> ReqArtifact["Artifact: Spec + Fixtures"]:::artifact
                 ReqArtifact --> E2EEntry(Start Phase 1a)
                 E2EEntry --> E2EBuilder["Agent: E2E Builder (Claude Code)"]:::agent
                 E2EBuilder --> CheckE2EBuilder{"Check: Tests Pass?"}:::check
-                CheckE2EBuilder -- "Error: Tests Failed" --&gt; E2EBuilder
-                CheckE2EBuilder -- OK --> InterfaceAnalyzer["Agent: Interface Analyzer (Pydantic AI)"]:::agent
-                InterfaceAnalyzer --> E2EArtifact["Artifact: e2e-tests/, InterfaceDescription"]:::artifact
-
-                %% PHASE 1b: Scaffolding
+                CheckE2EBuilder -- "Fail" --> E2EBuilder
+                CheckE2EBuilder -- OK --> InterfaceAnalyzer["Agent: Interface Analyzer"]:::agent
+                InterfaceAnalyzer --> E2EArtifact["Artifact: e2e-tests"]:::artifact
                 E2EArtifact --> ScaffoldEntry(Start Phase 1b)
                 ScaffoldEntry --> Scaffold["Process: PyScaffold putup"]:::process
                 Scaffold --> CheckScaffold{"Check: Success?"}:::check
-                CheckScaffold -- "Error: Failed" --&gt; ScaffoldError["Error: Halt"]:::error
-                CheckScaffold -- OK --> ScaffoldArtifact["Artifact: prototype/ structure"]:::artifact
-
-                %% PHASE 2: Grounding
+                CheckScaffold -- "Error" --> ScaffoldError["Error: Halt"]:::error
+                CheckScaffold -- OK --> ScaffoldArtifact["Artifact: prototype/"]:::artifact
                 ScaffoldArtifact --> ProtoEntry(Start Phase 2)
-                ProtoEntry --> Hacker["Agent: Prototyper (Anthropic Agent SDK)"]:::agent
+                ProtoEntry --> Hacker["Agent: Prototyper"]:::agent
                 Hacker --> CheckE2E{"Check: E2E Tests"}:::check
-                CheckE2E -- "Error: Tests Failed" --&gt; Hacker
+                CheckE2E -- "Fail" --> Hacker
                 CheckE2E -- OK --> ProtoArtifact["Artifact: Working Prototype"]:::artifact
-    
-                %% PHASE 3: Refinement
                 ProtoArtifact --> RefineEntry(Start Phase 3)
-                RefineEntry --> Refactorer["Agent: Architect (Anthropic Agent SDK)"]:::agent
-                Refactorer --> CheckArch{"Check: Taint/Structure"}:::check
-                CheckArch -- "Error: Side Effects<br>or Bad Structure" --&gt; Refactorer
+                RefineEntry --> Refactorer["Agent: Architect"]:::agent
+                Refactorer --> CheckArch{"Check: Taint"}:::check
+                CheckArch -- "Error" --> Refactorer
                 CheckArch -- OK --> ArchArtifact["Artifact: Refined Tree"]:::artifact
-    
-                %% PHASE 4: Distillation (Deterministic, no feedback loop typically needed)
                 ArchArtifact --> DistillEntry(Start Phase 4)
-                DistillEntry --> DepGraph["Process: pydeps<br>(Inter-Module Graph)"]:::process
-                DepGraph --> ASTAnalysis["Process: AST Analysis<br>(Intra-Module Symbols)"]:::process
-                ASTAnalysis --> TopoSort["Process: Topological Sort<br>(Leaf-First Ordering)"]:::process
-                TopoSort --> UnitList["Artifact: Unit Queue<br>(UnitWorkItem list)"]:::artifact
-                UnitList --> WorkspaceCopy["Process: Copy prototype/<br>to production/"]:::process
-                WorkspaceCopy --> ProductionArtifact["Artifact: production/ workspace"]:::artifact
+                DistillEntry --> DepGraph["Process: pydeps"]:::process
+                DepGraph --> ASTAnalysis["Process: AST Analysis"]:::process
+                ASTAnalysis --> TopoSort["Process: Topological Sort"]:::process
+                TopoSort --> UnitList["Artifact: Unit Queue"]:::artifact
+                UnitList --> WorkspaceCopy["Process: Copy to Production"]:::process
+                WorkspaceCopy --> ProductionArtifact["Artifact: production/"]:::artifact
             end
-    
-            ProductionArtifact --> UnitIterator{"Process: Next Unit?"}:::process
-    
-            %% =========================================================
-            %% SCOPE: UNIT (Runs ONCE per Unit)
-            %% =========================================================
-            subgraph UnitScope [Execution Scope: UNIT - (Once per Unit)]
+
+            ProductionArtifact --> UnitIterator{"Next Unit?"}:::process
+
+            %% =========================================================  
+            %% PHASE 4.5: Oracle
+            %% =========================================================  
+            subgraph OracleScope ["Phase 4.5: Oracle Generator"]
                 direction TB
-                UnitIterator -- Yes --> TestIterator{"Process: Next Test Case?"}:::process
-    
-                %% =====================================================
-                %% SCOPE: ATOMIC (Runs ONCE per Test Case)
-                %% =====================================================
-                subgraph AtomicScope [Phase 5: The Ratchet Cycle]
+                UnitIterator -- Yes --> OracleEntry(Start Oracle Generation)
+                OracleEntry --> Oracle["Agent: Oracle (Pydantic AI)"]:::agent
+                Oracle --> OracleArtifact["Artifact: Test Specs"]:::artifact
+            end
+
+            OracleArtifact --> TestIterator{"Next Test Case?"}:::process
+
+            %% =========================================================  
+            %% SCOPE: UNIT
+            %% =========================================================  
+            subgraph UnitScope ["Execution Scope: UNIT - Once per Unit"]
+                direction TB
+                subgraph AtomicScope ["Phase 5: The Ratchet Cycle"]
                     direction TB
-                    TestIterator -- Yes --> RatchetStart((Start Test Construction)):::ratchet
-                    
-                    %% Red Loop
-                    RatchetStart --> RedAgent["Agent: Tester (Anthropic Agent SDK)"]:::agent
-                    RedAgent --> CheckRed{"Check: Inventory + Failed State"}:::check
-                    CheckRed -- "Error: &gt;1 Test Added<br>or Test Passed" --&gt; RedAgent
-                    
-                    %% Green Loop
-                    CheckRed -- OK --> GreenAgent["Agent: Developer (Anthropic Agent SDK)"]:::agent
-                    GreenAgent --> CheckGreen{"Check: Pass + Coverage"}:::check
-                    CheckGreen -- "Error: Dead Code<br>or Test Failed(s)" --&gt; GreenAgent
-                    
-                    CheckGreen -- OK --> Commit["Process: Commit Code"]:::process
+                    TestIterator -- Yes --> RatchetStart((Start Test)):::ratchet
+                    RatchetStart --> RedAgent["Agent: Tester"]:::agent
+                    RedAgent --> Validator["Agent: Test Validator"]:::agent
+                    Validator --> CheckValidator{"Valid?"}:::check
+                    CheckValidator -- "No" --> RedAgent
+                    CheckValidator -- OK --> CheckRed{"Check State"}:::check
+                    CheckRed -- "Error" --> RedAgent
+                    CheckRed -- "Pass unexpectedly" --> Arbiter{"Agent: Arbiter"}:::agent
+                    Arbiter -- "Discard" --> RewindRed["Process: Rewind"]:::process
+                    Arbiter -- "Keep" --> Commit
+                    CheckRed -- OK --> GreenAgent["Agent: Developer"]:::agent
+                    GreenAgent --> CheckGreen{"Pass?"}:::check
+                    CheckGreen -- "Fail" --> GreenAgent
+                    CheckGreen -- OK --> Commit["Process: Commit"]:::process
                 end
-                %% =====================================================
-    
+
+                RewindRed --> TestIterator
                 Commit --> TestIterator
-    
-                %% PHASE 6: THE CRUCIBLE (Runs after all tests for unit are done)
-                TestIterator -- "No (Unit Construction Complete)" --> CrucibleStart(Start Phase 6: Crucible)
-                
-                subgraph CruciblePhase [Phase 6: The Crucible]
+
+                TestIterator -- "No" --> CrucibleStart(Start Phase 7)
+                  
+                subgraph CruciblePhase ["Phase 7: The Crucible"]
                     direction TB
-                    
-                    %% Mutation Loop
-                    CrucibleStart --> Mutator["Tool: Mutmut/CosmicRay"]:::process
-                    Mutator --> CheckMut{"Check: Mutants Survived?"}:::check
-                    CheckMut -- Yes --> Sentinel["Agent: Sentinel (Anthropic Agent SDK)"]:::agent
-                    Sentinel --> CheckKill{"Verify: Kills Mutant?"}:::check
-                    CheckKill -- "Error: Failed to Kill" --&gt; Sentinel
-                    CheckKill -- OK --> AddTest["Process: Add Test to Suite"]:::process
+                    CrucibleStart --> Mutator["Tool: Mutmut"]:::process
+                    Mutator --> CheckMut{"Mutants?"}:::check
+                    CheckMut -- Yes --> Sentinel["Agent: Sentinel"]:::agent
+                    Sentinel --> CheckKill{"Killed?"}:::check
+                    CheckKill -- "No" --> Sentinel
+                    CheckKill -- OK --> AddTest["Process: Add Test"]:::process
                     AddTest --> Mutator
-    
-                    %% Optimization Loop
-                    CheckMut -- "No (100% Score)" --> Optimizer["Agent: Optimizer (Anthropic Agent SDK)"]:::agent
-                    Optimizer --> CheckRegress{"Check: Regression?"}:::check
-                    CheckRegress -- "Error: Tests Failed" --&gt; Optimizer
-                    CheckRegress -- OK --> Converged{"Check: Optimized Enough?"}:::check
+                    CheckMut -- No --> Optimizer["Agent: Optimizer"]:::agent
+                    Optimizer --> CheckRegress{"Regression?"}:::check
+                    CheckRegress -- "Yes" --> Optimizer
+                    CheckRegress -- OK --> Converged{"Done?"}:::check
                     Converged -- No --> Optimizer
                 end
-    
-                Converged -- Yes --> FinalUnit["Artifact: Final Unit (Hardened & Optimized)"]:::artifact
+                Converged -- Yes --> FinalUnit["Artifact: Final Unit"]:::artifact
             end
-    
+
             FinalUnit --> UnitIterator
             UnitIterator -- No --> Production["Final Production System"]:::artifact
     </pre>
@@ -289,23 +280,34 @@
     <ul>
         <li><strong>Cardinality:</strong> Runs <strong>once per working prototype</strong>.</li>
         <li><strong>Agent:</strong> <code>Architect</code> (Anthropic Agent SDK).</li>
-        <li><strong>Goal:</strong> Transform the monolithic prototype into a structurally clean architecture, adhering to "Functional Core, Imperative Shell" principles.</li>
+        <li><strong>Goal:</strong> Transform the monolithic prototype into a structurally clean architecture, adhering to "Functional Core, Imperative Shell" (FCIS) principles.</li>
         <li><strong>Input:</strong> <code>prototype.py</code>.</li>
-        <li><strong>Process:</strong> The <code>Architect</code> refactors `prototype.py` by extracting pure logic into a designated `core` module and isolating side-effecting operations (I/O, network, database) into a `shell` module.</li>
-        <li><strong>Mechanistic Check:</strong> <code>Taint Analysis Processor</code>.
+        <li><strong>Process:</strong> The <code>Architect</code> refactors <code>prototype.py</code> by extracting pure logic into a designated <code>core</code> module and isolating side-effecting operations (I/O, network, database) into a <code>shell</code> module.</li>
+        <li><strong>Mechanistic Check:</strong> <code>Architecture Reviewer</code> (Pydantic AI agent).
             <ul>
-                <li><strong>Trigger:</strong>
+                <li><strong>Purpose:</strong> Validates that the refactored code adheres to FCIS principles.</li>
+                <li><strong>Violation Detection:</strong>
                     <ul>
-                        <li>Imports or calls to I/O-related modules (`os`, `sys`, `network`, `random`, `print`) are detected within the `core` module.</li>
-                        <li>High cyclomatic complexity or significant business logic branching is detected within `shell` functions.</li>
-                        <li>The refactored code introduces regressions (checked via rerunning <code>fixtures.json</code>).</li>
+                        <li><strong>I/O in Core:</strong> Imports or calls to I/O-related modules (<code>os</code>, <code>sys</code>, <code>network</code>, <code>random</code>, <code>print</code>) detected within the <code>core</code> module.</li>
+                        <li><strong>Forbidden Imports:</strong> Direct imports of external services, database connections, or file handles in core logic.</li>
+                        <li><strong>Exceptions for Business Logic:</strong> Using exceptions for control flow instead of returning values.</li>
+                        <li><strong>Missing Dependency Injection:</strong> Core functions that instantiate their own dependencies instead of receiving them as parameters.</li>
+                        <li><strong>High Complexity in Shell:</strong> Significant business logic branching detected within <code>shell</code> functions.</li>
                     </ul>
                 </li>
-                <li><strong>Feedback:</strong> Specific architectural violation details (e.g., "Side effect found in `core.py` on line 45: `print()` call detected. Move to `shell`," or "Function `process_request` in `shell.py` has high complexity; extract logic to `core`").</li>
+                <li><strong>Output:</strong> <code>ReviewerOutput</code> containing:
+                    <ul>
+                        <li><code>is_clean</code>: Boolean indicating whether architecture passes all checks</li>
+                        <li><code>violations</code>: List of specific violations with file, line number, and description</li>
+                        <li><code>summary</code>: Human-readable summary of the architectural review</li>
+                    </ul>
+                </li>
+                <li><strong>Feedback:</strong> Specific architectural violation details (e.g., "Side effect found in <code>core.py</code> on line 45: <code>print()</code> call detected. Move to <code>shell</code>.").</li>
                 <li><strong>Action:</strong> The <code>Architect</code> is prompted to correct the identified structural or impurity violations.</li>
             </ul>
         </li>
-        <li><strong>Output:</strong> A `src/` directory with `core/` and `shell/` modules and their respective files.</li>
+        <li><strong>Regression Check:</strong> After each refactoring pass, the E2E test suite is rerun against <code>fixtures.json</code> to ensure no behavioral regressions were introduced.</li>
+        <li><strong>Output:</strong> A <code>src/</code> directory with <code>core/</code> and <code>shell/</code> modules and their respective files.</li>
     </ul>
 
     <h4>Phase 4: The Distillation Loop</h4>
@@ -342,7 +344,36 @@
                 <li><code>tests</code>: Empty list (populated by Oracle Generator in a future phase)</li>
             </ul>
         </li>
-        <li><strong>Note:</strong> The <strong>Oracle Generator</strong> (dynamic tracing to capture I/O for test generation) is deferred to a later phase.</li>
+    </ul>
+
+    <h4>Phase 4.5: Oracle Generator</h4>
+    <ul>
+        <li><strong>Cardinality:</strong> Runs <strong>once per unit</strong> (functions and classes only; skips constants and imports).</li>
+        <li><strong>Agent:</strong> <code>Oracle</code> (Pydantic AI).</li>
+        <li><strong>Goal:</strong> Analyze each unit from the prototype code and generate exhaustive test case specifications that will drive the TDD reconstruction.</li>
+        <li><strong>Input:</strong> A <code>UnitWorkItem</code> containing the unit's source code, name, and dependencies.</li>
+        <li><strong>Process:</strong> The Oracle agent performs deep analysis of the unit's code to understand:
+            <ol>
+                <li>The function/class signature and parameter types</li>
+                <li>All possible execution paths and edge cases</li>
+                <li>Expected behaviors for various inputs</li>
+                <li>Error conditions and boundary cases</li>
+            </ol>
+        </li>
+        <li><strong>Output:</strong> <code>OracleOutput</code> containing:
+            <ul>
+                <li><code>description</code>: An exhaustive description of what the unit does</li>
+                <li><code>test_cases</code>: A list of <code>TestCaseDescription</code> objects, each with:
+                    <ul>
+                        <li><code>test_function_name</code>: Unique pytest-compatible function name</li>
+                        <li><code>scenario</code>: Human-readable description of the test scenario</li>
+                        <li><code>input_description</code>: Description of inputs to provide</li>
+                        <li><code>expected_outcome</code>: What the test should verify</li>
+                    </ul>
+                </li>
+            </ul>
+        </li>
+        <li><strong>Note:</strong> The Oracle populates the <code>tests</code> field in each <code>UnitWorkItem</code>, which is then consumed by the Ratchet Cycle.</li>
     </ul>
 
     <h3>3.2. Unit-Level Scope (1x per Unit)</h3>
@@ -362,18 +393,51 @@
     <ul>
         <li><strong>Cardinality:</strong> Runs <strong>once per test case</strong> provided for a unit.</li>
         <li><strong>Goal:</strong> Implement minimal code to satisfy a single failing test, ensuring 100% coverage of new lines.</li>
-        <li><strong>Input:</strong> A single test definition (description, input, expected output) from the Oracle.</li>
+        <li><strong>Input:</strong> A single <code>TestCaseDescription</code> from the Oracle Generator.</li>
         <li><strong>Process:</strong>
             <ol>
                 <li><strong>Red Loop:</strong>
                     <ul>
                         <li><strong>Agent:</strong> <code>Tester</code> (Anthropic Agent SDK).</li>
-                        <li><strong>Action:</strong> Creates exactly one new test file/method that asserts the new behavior.</li>
-                        <li><strong>Mechanistic Check:</strong> <code>Test Inventory Checker</code>.
+                        <li><strong>Permission Enforcement:</strong> The Tester agent operates under strict permission constraints enforced via Claude Agent SDK <code>PreToolUse</code> hooks:
                             <ul>
-                                <li><strong>Trigger:</strong> If `pytest --collect-only` identifies `(new_tests_count != 1)` or if the newly added test passes against the current codebase.</li>
+                                <li>Can ONLY write to the <code>tests/</code> directory</li>
+                                <li>CANNOT read the unit implementation file (prevents seeing the "answer")</li>
+                                <li>CANNOT execute any tools (Bash, etc.) - the system runs tests externally</li>
+                            </ul>
+                        </li>
+                        <li><strong>Action:</strong> Creates exactly one new test file/method that asserts the new behavior based only on the Oracle's specification.</li>
+                        <li><strong>Mechanistic Check 1:</strong> <code>Test Validator</code> (Pydantic AI agent).
+                            <ul>
+                                <li><strong>Trigger:</strong> Immediately after test is written, before running pytest.</li>
+                                <li><strong>Purpose:</strong> Validates that the newly written test correctly implements the Oracle's test case specification.</li>
+                                <li><strong>Checks:</strong> Scenario matches, inputs are correct, expected outcome is verified.</li>
+                                <li><strong>Feedback:</strong> If invalid, returns specific reason and prompts the Tester to fix.</li>
+                            </ul>
+                        </li>
+                        <li><strong>Mechanistic Check 2:</strong> <code>Test Inventory Checker</code>.
+                            <ul>
+                                <li><strong>Trigger:</strong> If <code>pytest --collect-only</code> identifies <code>(new_tests_count != 1)</code> or if the newly added test passes against the current codebase.</li>
                                 <li><strong>Feedback:</strong> "Error: You added N tests, expected 1. Remove extras." or "Error: The test `test_X` passed immediately; it must fail first."</li>
                                 <li><strong>Action:</strong> The <code>Tester</code> is prompted to re-attempt creating the failing test.</li>
+                            </ul>
+                        </li>
+                        <li><strong>Mechanistic Check 3:</strong> <code>Test Arbiter</code> (Pydantic AI agent).
+                            <ul>
+                                <li><strong>Trigger:</strong> Invoked when a test passes on the second attempt (i.e., should have failed but didn't).</li>
+                                <li><strong>Purpose:</strong> Evaluates whether to keep or discard the test using Kent Beck's two criteria:
+                                    <ol>
+                                        <li><strong>Confidence:</strong> Does this test increase confidence in the system's correctness?</li>
+                                        <li><strong>Communication:</strong> Does this test document a meaningfully different scenario?</li>
+                                    </ol>
+                                </li>
+                                <li><strong>Decision:</strong>
+                                    <ul>
+                                        <li><strong>Keep:</strong> Test has high value (skip Green phase, commit directly)</li>
+                                        <li><strong>Discard:</strong> Test has low value (rewind files and skip to next test case)</li>
+                                    </ul>
+                                </li>
+                                <li><strong>Output:</strong> <code>ArbiterDecision</code> with <code>keep_test</code>, <code>confidence_value</code>, <code>communication_value</code>, and <code>reasoning</code>.</li>
                             </ul>
                         </li>
                     </ul>
@@ -381,11 +445,26 @@
                 <li><strong>Green Loop:</strong>
                     <ul>
                         <li><strong>Agent:</strong> <code>Developer</code> (Anthropic Agent SDK).</li>
+                        <li><strong>Permission Enforcement:</strong> The Developer agent operates under strict permission constraints:
+                            <ul>
+                                <li>Can ONLY edit the specific unit implementation file</li>
+                                <li>CANNOT read the test file (prevents seeing expected behavior)</li>
+                                <li>CANNOT execute any tools - the system runs tests externally</li>
+                            </ul>
+                        </li>
                         <li><strong>Action:</strong> Writes the minimal implementation code required to make the newly added test pass.</li>
                         <li><strong>Mechanistic Check:</strong> <code>Coverage Intersection Checker</code>.
                             <ul>
-                                <li><strong>Trigger:</strong> If any tests (new or existing) fail, or if the code lines added by the `Developer` are not fully executed by the test suite (i.e., `(LinesAdded - LinesExecuted)` is not empty).</li>
-                                <li><strong>Feedback:</strong> "Error: Test `test_X` failed: [Stack Trace]" or "Error: You added code on lines [Y, Z] that was not executed by tests (dead code or unreached logic)."</li>
+                                <li><strong>Process:</strong>
+                                    <ol>
+                                        <li>Runs <code>pytest --cov --cov-report=json</code> to collect coverage data</li>
+                                        <li>Extracts coverage for the specific unit's line range (from <code>line_number</code> to <code>end_line_number</code>)</li>
+                                        <li>Computes intersection: lines within the function that are NOT executed</li>
+                                    </ol>
+                                </li>
+                                <li><strong>Trigger:</strong> If any tests fail, OR if there are uncovered lines within the unit's function body (dead code).</li>
+                                <li><strong>Feedback:</strong> "Error: Test failed: [Stack Trace]" or "Error: Dead code detected on lines [Y, Z] within the function. Remove unreachable code or ensure tests exercise all paths."</li>
+                                <li><strong>Baseline Persistence:</strong> On success, saves coverage baseline to <code>.breakfix/coverage/{fqn}.json</code> for regression detection in future iterations.</li>
                                 <li><strong>Action:</strong> The <code>Developer</code> is prompted to correct the implementation.</li>
                             </ul>
                         </li>
@@ -393,10 +472,11 @@
                 </li>
             </ol>
         </li>
+        <li><strong>File Checkpointing:</strong> Both Red and Green agents use Claude Agent SDK's file checkpointing (<code>enable_file_checkpointing=True</code>) to enable atomic rollback. If an agent exceeds max retries, the system rewinds all file changes to the checkpoint before the agent started.</li>
         <li><strong>Output:</strong> The committed, functionally added / modified code for the unit. Control returns to the Unit Construction Iterator.</li>
     </ul>
 
-    <h2>4. Phase 6: The Crucible (Hardening & Polishing)</h2>
+    <h2>4. Phase 7: The Crucible (Hardening & Polishing)</h2>
     <p>This phase is paramount for ensuring the production readiness of each unit. It runs **once per unit** after its construction via the Ratchet Cycle is complete.</p>
 
     <h4>Sub-Cycle A: Mutation Testing (The Hardening)</h4>
