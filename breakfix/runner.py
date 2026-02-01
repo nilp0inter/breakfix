@@ -17,6 +17,9 @@ from breakfix.agents import (
     run_oracle,
     run_ratchet_red,
     run_ratchet_green,
+    run_mutation_testing,
+    run_sentinel,
+    verify_mutant_killed,
 )
 from breakfix.distiller import run_distiller
 from breakfix.graph import run_graph, NodeErrored, NodeFailed
@@ -213,10 +216,12 @@ async def run(working_directory: str):
         # Phase 6: Ratchet - Green Phase (Developer Agent)
         run_ratchet_green=run_ratchet_green,
 
-        # Phase 7: Crucible Agents & Checks
-        process_mutation_testing=lambda u: 1.0 if sim_check(0.6) else 0.5,
-        agent_sentinel=lambda u: "test_killer()",
-        check_mutant_killed=lambda t: sim_check(0.8),
+        # Phase 7: Crucible - Mutation Testing
+        run_mutation_testing=run_mutation_testing,
+        run_sentinel=run_sentinel,
+        verify_mutant_killed=verify_mutant_killed,
+
+        # Phase 7b: Optimization (still stubbed for now)
         agent_optimizer=lambda u, c: "optimized_code()",
         check_regression=lambda c: not sim_check(0.8)
     )

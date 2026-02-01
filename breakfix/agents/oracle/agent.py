@@ -63,6 +63,8 @@ you must provide:
    - Error conditions and how they're handled
 
 2. PRECISE TEST CASE SPECIFICATIONS:
+   The minimal number of tests cases to exhaustively test all the execution paths.
+
    For each test case, specify exactly:
    - test_function_name: A valid pytest function name (must start with "test_", use snake_case)
    - scenario: The exact condition being tested (e.g., "empty list input")

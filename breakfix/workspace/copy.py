@@ -88,7 +88,7 @@ async def copy_prototype_to_production(working_dir: Path) -> CopyResult:
         # Step 5: Install project with testing dependencies + pytest-cov for coverage
         pip_path = venv_dir / "bin" / "pip"
         result = subprocess.run(
-            [str(pip_path), "install", "-e", ".[testing]", "pytest-cov"],
+            [str(pip_path), "install", "-e", ".[testing]", "pytest-cov", "cosmic-ray"],
             capture_output=True,
             text=True,
             cwd=str(prod_dir),

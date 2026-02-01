@@ -410,27 +410,86 @@ async def ratchet_green_node(unit: UnitWorkItem, test: TestCase, pytest_failure:
 
 
 async def crucible_mutation_node(unit: UnitWorkItem, *, deps):
-    """CRUCIBLE: Mutation Testing"""
-    score = deps.process_mutation_testing(unit.name)
-    if score < 1.0:
-        logging.warning(f"[CRUCIBLE] Mutation Score {score}. Deploying Sentinel.")
-        return MoveToNode.with_parameters(crucible_sentinel_node, unit)
+    """CRUCIBLE: Mutation Testing - verify test suite completeness via mutation testing."""
+    logging.info(f"[CRUCIBLE] Running mutation testing for {unit.name}")
 
+    result = await deps.run_mutation_testing(
+        production_dir=Path(deps.working_directory) / "production",
+        unit_fqn=unit.name,
+        module_path=unit.module_path,
+        start_line=unit.line_number,
+        end_line=unit.end_line_number,
+    )
+
+    if not result.success:
+        return NodeError(error=f"Mutation testing failed: {result.error}")
+
+    if result.score < 1.0:
+        logging.warning(
+            f"[CRUCIBLE] Mutation score {result.score:.2%}. "
+            f"{len(result.surviving_mutants)} mutants survived out of {result.total_mutants}."
+        )
+        # Pass surviving mutants to Sentinel
+        return MoveToNode.with_parameters(
+            crucible_sentinel_node,
+            unit,
+            result.surviving_mutants,
+        )
+
+    logging.info(f"[CRUCIBLE] Perfect mutation score! All {result.total_mutants} mutants killed.")
     return MoveToNode.with_parameters(crucible_optimization_node, unit)
 
 
-async def crucible_sentinel_node(unit: UnitWorkItem, *, deps):
-    """SENTINEL: Kill Mutants"""
-    new_test = deps.agent_sentinel(unit.name)
-    killed = deps.check_mutant_killed(new_test)
-
-    if killed:
-        logging.info("[CRUCIBLE] Mutant killed.")
-        # Re-run mutation check
+async def crucible_sentinel_node(unit: UnitWorkItem, surviving_mutants: list, *, deps):
+    """SENTINEL: Kill surviving mutants by writing targeted tests."""
+    if not surviving_mutants:
+        # All mutants killed, re-verify with full mutation run
+        logging.info("[SENTINEL] All mutants killed. Re-verifying...")
         return MoveToNode.with_parameters(crucible_mutation_node, unit)
-    else:
-        logging.warning("[CRUCIBLE] Failed to kill mutant. Retrying.")
-        return MoveToNode.with_parameters(crucible_sentinel_node, unit)
+
+    current_mutant = surviving_mutants[0]
+    logging.info(f"[SENTINEL] Targeting mutant {current_mutant.id}")
+
+    result = await deps.run_sentinel(
+        unit=unit,
+        mutant=current_mutant,
+        production_dir=Path(deps.working_directory) / "production",
+    )
+
+    if not result.success:
+        # Fatal: cannot kill mutant (possibly equivalent)
+        return NodeError(
+            error=f"Failed to kill mutant {current_mutant.id}: {result.error}"
+        )
+
+    # Verify the test actually kills the mutant by re-running mutmut
+    logging.info(f"[SENTINEL] Verifying mutant {current_mutant.id} is killed...")
+    verification = await deps.verify_mutant_killed(
+        production_dir=Path(deps.working_directory) / "production",
+        unit_fqn=unit.name,
+        mutant_id=current_mutant.id,
+        module_path=unit.module_path,
+        start_line=unit.line_number,
+        end_line=unit.end_line_number,
+    )
+
+    if not verification.killed:
+        return NodeError(
+            error=f"Sentinel test failed to kill mutant {current_mutant.id}. "
+                  f"Still surviving after new test added."
+        )
+
+    logging.info(f"[SENTINEL] Mutant {current_mutant.id} killed!")
+
+    # Continue with remaining mutants
+    remaining = surviving_mutants[1:]
+    if remaining:
+        logging.info(f"[SENTINEL] {len(remaining)} mutants remaining")
+        return MoveToNode.with_parameters(crucible_sentinel_node, unit, remaining)
+
+    # All done, re-run mutation testing to confirm 100% score
+    logging.info("[SENTINEL] All targeted mutants killed. Re-running full mutation check...")
+    return MoveToNode.with_parameters(crucible_mutation_node, unit)
 
 
 async def crucible_optimization_node(unit: UnitWorkItem, *, deps):

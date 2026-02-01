@@ -7,6 +7,15 @@ from .refactorer import run_refactorer, RefactorerResult
 from .oracle import run_oracle, OracleResult
 from .ratchet_red import run_ratchet_red, RatchetRedResult
 from .ratchet_green import run_ratchet_green, RatchetGreenResult
+from .crucible import (
+    run_mutation_testing,
+    run_sentinel,
+    verify_mutant_killed,
+    MutationResult,
+    SurvivingMutant,
+    SentinelResult,
+    VerificationResult,
+)
 
 __all__ = [
     "TestFixture", "ProjectMetadata", "AnalystOutput", "create_analyst",
@@ -18,4 +27,6 @@ __all__ = [
     "run_oracle", "OracleResult",
     "run_ratchet_red", "RatchetRedResult",
     "run_ratchet_green", "RatchetGreenResult",
+    "run_mutation_testing", "run_sentinel", "verify_mutant_killed",
+    "MutationResult", "SurvivingMutant", "SentinelResult", "VerificationResult",
 ]
