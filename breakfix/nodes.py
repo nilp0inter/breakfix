@@ -20,6 +20,7 @@ from breakfix.agents import ProjectMetadata
 class TestCase:
     id: int
     description: str
+    test_function_name: str = ""  # pytest function name (e.g., "test_calculate_with_empty_list")
 
 
 @dataclass
@@ -32,6 +33,7 @@ class UnitWorkItem:
     end_line_number: int = 0                               # End line in module
     symbol_type: str = ""                                  # "function", "class", "constant", "import"
     dependencies: List[str] = field(default_factory=list)  # Local names of dependencies
+    description: str = ""                                  # Exhaustive description from Oracle
 
 
 @dataclass
@@ -228,11 +230,20 @@ async def phase_distillation_node(state: ProjectState, *, deps):
     """Phase 4: Decompose refined prototype into atomic units."""
     logging.info("[OUTER] Phase 4: Distillation")
 
-    proto_dir = Path(state.working_directory) / "prototype"
+    prod_dir = Path(state.working_directory) / "production"
 
-    # Step 1: Run distiller to analyze prototype
+    # Step 1: Copy prototype to production for ratchet cycle
+    logging.info("[OUTER] Copying prototype to production workspace")
+    copy_result = await deps.copy_prototype_to_production(
+        Path(state.working_directory)
+    )
+
+    if not copy_result.success:
+        return NodeError(error=f"Failed to copy prototype to production: {copy_result.error}")
+
+    # Step 2: Run distiller to analyze production (paths will be in production/)
     result = await deps.run_distiller(
-        proto_dir=proto_dir,
+        proto_dir=prod_dir,
         package_name=state.project_metadata.package_name,
     )
 
@@ -242,47 +253,85 @@ async def phase_distillation_node(state: ProjectState, *, deps):
     logging.info(f"[OUTER] Distilled {len(result.units)} units")
     state.unit_queue = result.units
 
-    # Step 2: Copy prototype to production for ratchet cycle
-    logging.info("[OUTER] Copying prototype to production workspace")
-    copy_result = await deps.copy_prototype_to_production(
-        Path(state.working_directory)
+    # Step 3: Clean up production code for TDD (stub shell.py and core.py functions)
+    logging.info("[OUTER] Cleaning up production code for TDD")
+    cleanup_result = await deps.cleanup_production_code(
+        unit_queue=state.unit_queue,
     )
 
-    if not copy_result.success:
-        return NodeError(error=f"Failed to copy prototype to production: {copy_result.error}")
+    if not cleanup_result.success:
+        return NodeError(error=f"Cleanup failed: {cleanup_result.error}")
 
-    return MoveToNode.with_parameters(unit_orchestrator_node, state)
+    logging.info(f"[OUTER] Stubbed {cleanup_result.functions_stubbed} functions in {cleanup_result.files_modified} files")
+
+    # Step 4: Filter unit_queue to only include units from stubbed files (shell.py/core.py)
+    def is_tdd_target(unit: UnitWorkItem) -> bool:
+        return (unit.module_path.endswith("shell.py") or
+                unit.module_path.endswith("core.py"))
+
+    all_units = len(state.unit_queue)
+    state.unit_queue = [u for u in state.unit_queue if is_tdd_target(u)]
+    logging.info(f"[OUTER] Filtered to {len(state.unit_queue)} TDD target units (from {all_units} total)")
+
+    return MoveToNode.with_parameters(phase_oracle_node, state)
 
 
-async def unit_orchestrator_node(state: ProjectState, *, deps):
-    """
-    META-NODE: This node stops the flat flow and invokes a
-    recursive graph execution for each unit.
-    """
-    if not state.unit_queue:
-        return FinalResult(result=f"Project Complete. Units: {state.finished_units}")
+async def phase_oracle_node(state: ProjectState, *, deps):
+    """Phase 5: Oracle - Generate test descriptions and run Ratchet for each unit."""
+    logging.info("[OUTER] Phase 5: Oracle + Ratchet Cycles")
 
-    # Pop the next unit to build
-    current_unit = state.unit_queue.pop(0)
-    logging.info(f"[OUTER] Delegating Unit '{current_unit.name}' to Inner Graph.")
+    total_tests = 0
+    skipped = 0
+    total_units = len(state.unit_queue)
 
-    try:
-        # RECURSION TRIGGER: Calls run_graph inside run_graph
-        # The inner graph handles the complex Ratchet/Crucible lifecycles
-        finalized_unit_code = await run_graph(
-            inner_unit_start_node,
-            unit=current_unit,
-            deps=deps
-        )
+    for i, unit in enumerate(state.unit_queue):
+        logging.info(f"[ORACLE] Processing unit {i+1}/{total_units}: {unit.name}")
 
-        logging.info(f"[OUTER] Unit '{current_unit.name}' completed successfully.")
-        state.finished_units.append(f"{current_unit.name} (Verified)")
+        # Skip non-testable units (constants, imports)
+        if unit.symbol_type not in ("function", "class"):
+            logging.info(f"[ORACLE] Skipped {unit.name} (symbol_type={unit.symbol_type})")
+            skipped += 1
+            state.finished_units.append(f"{unit.name} (Skipped - {unit.symbol_type})")
+            continue
 
-        # Loop back to self to handle next unit in queue
-        return MoveToNode.with_parameters(unit_orchestrator_node, state)
+        # Generate test descriptions for this unit
+        result = await deps.run_oracle(unit)
 
-    except (NodeErrored, NodeFailed) as e:
-        return NodeError(error=f"Critical failure building unit {current_unit.name}: {e}")
+        if not result.success:
+            return NodeError(error=f"Oracle failed for {unit.name}: {result.error}")
+
+        unit.description = result.description
+        unit.tests = result.test_cases
+        total_tests += len(result.test_cases)
+
+        # Log Oracle output
+        logging.info(f"[ORACLE] {unit.name} - Description:")
+        for line in result.description.split('\n'):
+            logging.info(f"[ORACLE]   {line}")
+        logging.info(f"[ORACLE] {unit.name} - Test cases ({len(result.test_cases)}):")
+        for tc in result.test_cases:
+            logging.info(f"[ORACLE]   [{tc.id}] {tc.description.replace(chr(10), ' | ')}")
+
+        # Run Ratchet cycle for this unit immediately
+        logging.info(f"[OUTER] Starting Ratchet cycle for: {unit.name}")
+        try:
+            finalized_unit_code = await run_graph(
+                inner_unit_start_node,
+                unit=unit,
+                deps=deps
+            )
+            logging.info(f"[OUTER] Unit '{unit.name}' completed successfully.")
+            state.finished_units.append(f"{unit.name} (Verified)")
+
+        except NodeErrored as e:
+            return NodeError(error=f"Critical failure building unit {unit.name}: {e}")
+        except NodeFailed:
+            raise
+
+    logging.info(f"[OUTER] Completed {total_tests} test cases for {total_units - skipped} units ({skipped} skipped)")
+    return FinalResult(result=f"Project Complete. Units: {state.finished_units}")
+
+
 
 
 # ==============================================================================
@@ -309,29 +358,47 @@ async def ratchet_iterator_node(unit: UnitWorkItem, *, deps):
 
 
 async def ratchet_red_node(unit: UnitWorkItem, test: TestCase, *, deps):
-    """RED: Write Failing Test"""
-    # In real logic, we'd append to unit.code or test suite files
-    test_code = deps.agent_tester(unit.name, test.description)
-    valid_red = deps.check_ratchet_red_state(test_code)
+    """RED: Write Failing Test using Tester agent."""
+    logging.info(f"[RATCHET-RED] Writing test for: {test.description[:60]}...")
 
-    if not valid_red:
-        logging.warning("[ATOMIC] Red Check Failed. Retrying.")
-        return MoveToNode.with_parameters(ratchet_red_node, unit, test)
+    result = await deps.run_ratchet_red(
+        unit=unit,
+        test_case=test,
+        production_dir=Path(deps.working_directory) / "production",
+        get_test_inventory=deps.get_test_inventory,
+    )
 
-    return MoveToNode.with_parameters(ratchet_green_node, unit, test)
+    if not result.success:
+        logging.warning(f"[RATCHET-RED] Failed: {result.error}")
+        return NodeError(error=f"Red phase failed for {unit.name}: {result.error}")
+
+    logging.info(f"[RATCHET-RED] Test written successfully: {result.test_file_path} (retries: {result.retries})")
+    # Pass pytest failure output to Green agent
+    return MoveToNode.with_parameters(ratchet_green_node, unit, test, result.pytest_failure)
 
 
-async def ratchet_green_node(unit: UnitWorkItem, test: TestCase, *, deps):
-    """GREEN: Write Passing Code"""
-    impl_code = deps.agent_developer(unit.name, test.description)
-    valid_green = deps.check_ratchet_green_coverage(impl_code)
+async def ratchet_green_node(unit: UnitWorkItem, test: TestCase, pytest_failure: str, *, deps):
+    """GREEN: Write Passing Code using Developer agent."""
+    logging.info(f"[RATCHET-GREEN] Implementing code for: {test.description[:60]}...")
 
-    if not valid_green:
-        logging.warning("[ATOMIC] Green/Coverage Check Failed. Retrying.")
-        return MoveToNode.with_parameters(ratchet_green_node, unit, test)
+    # Calculate the test file path (same pattern as Red agent)
+    from breakfix.agents.ratchet_red.agent import _calculate_test_file_path
+    test_file_path = _calculate_test_file_path(unit.name)
 
-    # Commit code to unit state
-    unit.code += f"\n# Impl for {test.description}"
+    result = await deps.run_ratchet_green(
+        unit=unit,
+        test_case=test,
+        test_file_path=test_file_path,
+        production_dir=Path(deps.working_directory) / "production",
+        initial_failure=pytest_failure,
+    )
+
+    if not result.success:
+        logging.warning(f"[RATCHET-GREEN] Failed: {result.error}")
+        return NodeError(error=f"Green phase failed for {unit.name}: {result.error}")
+
+    logging.info(f"[RATCHET-GREEN] Implementation complete, all tests passing (retries: {result.retries})")
+
     return MoveToNode.with_parameters(ratchet_iterator_node, unit)
 
 

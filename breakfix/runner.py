@@ -5,6 +5,8 @@ from argparse import Namespace
 from dataclasses import dataclass
 from pathlib import Path
 
+from typing import Set
+
 from breakfix.agents import (
     create_analyst,
     run_e2e_builder,
@@ -12,10 +14,13 @@ from breakfix.agents import (
     run_prototyper,
     review_architecture,
     run_refactorer,
+    run_oracle,
+    run_ratchet_red,
+    run_ratchet_green,
 )
 from breakfix.distiller import run_distiller
 from breakfix.graph import run_graph, NodeErrored, NodeFailed
-from breakfix.workspace import copy_prototype_to_production
+from breakfix.workspace import copy_prototype_to_production, cleanup_production_code
 from breakfix.nodes import (
     TestCase,
     UnitWorkItem,
@@ -35,6 +40,48 @@ class E2EVerificationResult:
     """Result from E2E test verification."""
     success: bool
     error: str = ""
+
+
+def get_test_inventory(tests_dir: Path) -> Set[str]:
+    """Get set of test node IDs in tests directory using pytest --collect-only."""
+    production_dir = tests_dir.parent
+    pytest_path = production_dir / ".venv" / "bin" / "pytest"
+
+    # Use -p no:cov to disable coverage plugin (setup.cfg may have --cov flags)
+    # Use -o addopts= to clear any addopts from setup.cfg/pyproject.toml
+    cmd = [
+        str(pytest_path),
+        "--collect-only", "-q",
+        "-p", "no:cov",
+        "-o", "addopts=",
+        str(tests_dir)
+    ]
+    logging.info(f"[TEST-INVENTORY] Running: {' '.join(cmd)}")
+    logging.info(f"[TEST-INVENTORY] cwd: {production_dir}")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=str(production_dir)
+        )
+        logging.info(f"[TEST-INVENTORY] Return code: {result.returncode}")
+        logging.info(f"[TEST-INVENTORY] stdout: {result.stdout[:500] if result.stdout else '(empty)'}")
+        logging.info(f"[TEST-INVENTORY] stderr: {result.stderr[:500] if result.stderr else '(empty)'}")
+
+        # Parse output: each line is a test node ID like "tests/test_core.py::test_func"
+        tests = set()
+        for line in result.stdout.strip().split('\n'):
+            line = line.strip()
+            if line and '::' in line and not line.startswith(('=', '-', 'no tests')):
+                tests.add(line)
+
+        logging.info(f"[TEST-INVENTORY] Found {len(tests)} tests: {tests}")
+        return tests
+    except Exception as e:
+        logging.error(f"[TEST-INVENTORY] Error: {e}")
+        return set()
 
 
 async def run(working_directory: str):
@@ -130,6 +177,7 @@ async def run(working_directory: str):
 
     deps = Namespace(
         input=input,  # Used elsewhere
+        working_directory=working_directory,  # For inner graph access
 
         # Analyst agent factory (input_fn baked in)
         create_analyst=lambda: create_analyst(model="openai:gpt-5-mini", input_fn=input),
@@ -153,14 +201,19 @@ async def run(working_directory: str):
         # Phase 4: Distillation
         run_distiller=run_distiller,
         copy_prototype_to_production=copy_prototype_to_production,
+        cleanup_production_code=cleanup_production_code,
 
-        # Phase 5 Agents & Checks
-        agent_tester=lambda u, t: "test_fn()",
-        check_ratchet_red_state=lambda x: sim_check(0.8),
-        agent_developer=lambda u, t: "return True",
-        check_ratchet_green_coverage=lambda x: sim_check(0.7),
+        # Phase 5: Oracle
+        run_oracle=run_oracle,
 
-        # Phase 6 Agents & Checks
+        # Phase 6: Ratchet - Red Phase (Tester Agent)
+        run_ratchet_red=run_ratchet_red,
+        get_test_inventory=get_test_inventory,
+
+        # Phase 6: Ratchet - Green Phase (Developer Agent)
+        run_ratchet_green=run_ratchet_green,
+
+        # Phase 7: Crucible Agents & Checks
         process_mutation_testing=lambda u: 1.0 if sim_check(0.6) else 0.5,
         agent_sentinel=lambda u: "test_killer()",
         check_mutant_killed=lambda t: sim_check(0.8),

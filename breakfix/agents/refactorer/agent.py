@@ -204,23 +204,24 @@ def read_payment_request() -> PaymentRequest | InvalidInput:
 **Key principle**: Only capture exceptions the core logic can do something meaningful about.
 If core can't handle it (MemoryError, SystemExit), let it bubble up.
 
-### Subpackage __init__.py - Dependency Wiring
-Each subpackage's `__init__.py` wires dependencies with default shell functions:
+### Subpackage __init__.py - Lazy Dependency Wiring
+Each subpackage's `__init__.py` defines builder functions for lazy wiring:
 ```python
 # payments/__init__.py
 from .core import create_process_payment
 from .shell import fetch_from_bank, save_transaction
 from .model import PaymentApproved, PaymentDenied, InsufficientFunds
 
-# Wire with default shell functions - ready to use
-process_payment = create_process_payment(fetch_from_bank, save_transaction)
+# Lazy loading - returns wired function when called (not at import time)
+build_process_payment = lambda: create_process_payment(fetch_from_bank, save_transaction)
 
-# Export for users
-__all__ = ["process_payment", "PaymentApproved", "PaymentDenied", "InsufficientFunds"]
+# Export builders and models
+__all__ = ["build_process_payment", "create_process_payment", "PaymentApproved", "PaymentDenied", "InsufficientFunds"]
 ```
 
 This allows:
-- Users import ready-to-use functions: `from {package_name}.payments import process_payment`
+- Users get wired functions: `process_payment = build_process_payment()`
+- Import succeeds even if shell functions are stubbed
 - Tests can create custom instances: `create_process_payment(mock_fetch, mock_save)`
 
 ### parser.py - Argument Parsing
@@ -237,11 +238,12 @@ def create_parser() -> argparse.ArgumentParser:
 ```python
 import sys
 from .parser import create_parser
-from .payments import process_payment, PaymentApproved, PaymentDenied, InsufficientFunds
+from .payments import build_process_payment, PaymentApproved, PaymentDenied, InsufficientFunds
 
 def main():
     parser = create_parser()
     args = parser.parse_args()
+    process_payment = build_process_payment()
     result = process_payment(args.amount)
     match result:
         case PaymentApproved(transaction_id=tx):
@@ -289,7 +291,7 @@ The FCIS architecture should be maintained:
 - src/{package_name}/<domain>/model.py - Domain-specific dataclasses (e.g., PaymentApproved, UserNotFound)
 - src/{package_name}/<domain>/core.py - Pure functions with dependency injection
 - src/{package_name}/<domain>/shell.py - I/O adapters returning domain-specific types
-- src/{package_name}/<domain>/__init__.py - Wires dependencies, exports ready-to-use functions
+- src/{package_name}/<domain>/__init__.py - Lazy wiring with build_* lambdas
 - src/{package_name}/parser.py - Argument parsing
 - src/{package_name}/cli.py - main() entrypoint, handles outcomes with match/case
 
