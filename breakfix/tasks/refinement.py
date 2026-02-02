@@ -35,10 +35,8 @@ async def refinement_task(
         raise RefinementError("Project metadata is required for refinement")
 
     # Create a closure for running E2E tests
-    async def run_e2e_test(proto_dir: Path) -> object:
-        return await config.run_prototype_e2e_test(
-            proto_dir, state.project_metadata.package_name
-        )
+    async def run_e2e_test(proto_dir: Path, package_name: str) -> object:
+        return await config.run_prototype_e2e_test(proto_dir, package_name)
 
     result = await run_refactorer(
         working_dir=state.working_directory,
