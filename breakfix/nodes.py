@@ -365,7 +365,7 @@ async def ratchet_red_node(unit: UnitWorkItem, test: TestCase, *, deps):
         unit=unit,
         test_case=test,
         production_dir=Path(deps.working_directory) / "production",
-        get_test_inventory=deps.get_test_inventory,
+        get_test_inventory_with_errors=deps.get_test_inventory_with_errors,
     )
 
     if not result.success:

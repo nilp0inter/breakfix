@@ -45,8 +45,18 @@ class E2EVerificationResult:
     error: str = ""
 
 
-def get_test_inventory(tests_dir: Path) -> Set[str]:
-    """Get set of test node IDs in tests directory using pytest --collect-only."""
+@dataclass
+class TestInventoryResult:
+    """Result from collecting tests."""
+    tests: Set[str]
+    collection_error: str = ""  # Non-empty if collection failed
+
+
+def get_test_inventory_with_errors(tests_dir: Path) -> TestInventoryResult:
+    """Get set of test node IDs in tests directory using pytest --collect-only.
+
+    Returns both the tests found and any collection error output.
+    """
     production_dir = tests_dir.parent
     pytest_path = production_dir / ".venv" / "bin" / "pytest"
 
@@ -80,11 +90,28 @@ def get_test_inventory(tests_dir: Path) -> Set[str]:
             if line and '::' in line and not line.startswith(('=', '-', 'no tests')):
                 tests.add(line)
 
+        # Check for collection errors (return code 2 typically means collection error)
+        collection_error = ""
+        if result.returncode != 0 and "ERROR collecting" in result.stdout:
+            # Extract the error section
+            collection_error = result.stdout
+
         logging.info(f"[TEST-INVENTORY] Found {len(tests)} tests: {tests}")
-        return tests
+        if collection_error:
+            logging.warning(f"[TEST-INVENTORY] Collection error detected")
+
+        return TestInventoryResult(tests=tests, collection_error=collection_error)
     except Exception as e:
         logging.error(f"[TEST-INVENTORY] Error: {e}")
-        return set()
+        return TestInventoryResult(tests=set(), collection_error=str(e))
+
+
+def get_test_inventory(tests_dir: Path) -> Set[str]:
+    """Get set of test node IDs in tests directory using pytest --collect-only.
+
+    This is a convenience wrapper that returns just the tests set.
+    """
+    return get_test_inventory_with_errors(tests_dir).tests
 
 
 async def run(working_directory: str):
@@ -211,7 +238,7 @@ async def run(working_directory: str):
 
         # Phase 6: Ratchet - Red Phase (Tester Agent)
         run_ratchet_red=run_ratchet_red,
-        get_test_inventory=get_test_inventory,
+        get_test_inventory_with_errors=get_test_inventory_with_errors,
 
         # Phase 6: Ratchet - Green Phase (Developer Agent)
         run_ratchet_green=run_ratchet_green,

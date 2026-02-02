@@ -1,6 +1,8 @@
 """Tests for Ratchet Red Phase (Tester Agent) functionality."""
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Set
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -25,6 +27,13 @@ from breakfix.agents.ratchet_red.arbiter import (
     ARBITER_SYSTEM_PROMPT,
 )
 from breakfix.nodes import UnitWorkItem, TestCase
+
+
+@dataclass
+class MockTestInventoryResult:
+    """Mock TestInventoryResult for tests."""
+    tests: Set[str]
+    collection_error: str = ""
 
 
 class TestPermissionHandler:
@@ -359,13 +368,15 @@ class TestRunRatchetRedWithMocks:
         test_file = test_file_dir / "test_calculate.py"
         test_file.write_text("def test_calculate(): pass")
 
-        # Mock get_test_inventory to return different sets before/after
+        # Mock get_test_inventory_with_errors to return different sets before/after
         inventory_calls = [0]
-        def mock_get_inventory(tests_dir):
+        def mock_get_inventory_with_errors(tests_dir):
             inventory_calls[0] += 1
             if inventory_calls[0] == 1:
-                return set()  # Before
-            return {"tests/unit/mypackage/core/test_calculate.py::test_calculate_positive"}  # After
+                return MockTestInventoryResult(tests=set())  # Before
+            return MockTestInventoryResult(
+                tests={"tests/unit/mypackage/core/test_calculate.py::test_calculate_positive"}
+            )  # After
 
         # Mock validate_test to return valid
         mock_validation = ValidationResult(is_valid=True)
@@ -393,7 +404,7 @@ class TestRunRatchetRedWithMocks:
                         unit=unit,
                         test_case=test_case,
                         production_dir=temp_production_dir,
-                        get_test_inventory=mock_get_inventory,
+                        get_test_inventory_with_errors=mock_get_inventory_with_errors,
                     )
 
         assert result.success
@@ -408,9 +419,9 @@ class TestRunRatchetRedWithMocks:
         test_file = test_file_dir / "test_calculate.py"
         test_file.write_text("def test_calculate(): pass")
 
-        # Mock get_test_inventory to return same set before/after (no new tests)
-        def mock_get_inventory(tests_dir):
-            return set()
+        # Mock get_test_inventory_with_errors to return same set before/after (no new tests)
+        def mock_get_inventory_with_errors(tests_dir):
+            return MockTestInventoryResult(tests=set())
 
         # Mock ClaudeSDKClient
         mock_client = AsyncMock()
@@ -433,7 +444,7 @@ class TestRunRatchetRedWithMocks:
                     unit=unit,
                     test_case=test_case,
                     production_dir=temp_production_dir,
-                    get_test_inventory=mock_get_inventory,
+                    get_test_inventory_with_errors=mock_get_inventory_with_errors,
                     max_retries=1,
                 )
 
@@ -450,14 +461,14 @@ class TestRunRatchetRedWithMocks:
         test_file.write_text("def test_calculate(): pass")
 
         inventory_calls = [0]
-        def mock_get_inventory(tests_dir):
+        def mock_get_inventory_with_errors(tests_dir):
             inventory_calls[0] += 1
             if inventory_calls[0] == 1:
-                return set()
-            return {
+                return MockTestInventoryResult(tests=set())
+            return MockTestInventoryResult(tests={
                 "tests/unit/mypackage/core/test_calculate.py::test_calculate_positive",
                 "tests/unit/mypackage/core/test_calculate.py::test_calculate_negative",
-            }
+            })
 
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -479,7 +490,7 @@ class TestRunRatchetRedWithMocks:
                     unit=unit,
                     test_case=test_case,
                     production_dir=temp_production_dir,
-                    get_test_inventory=mock_get_inventory,
+                    get_test_inventory_with_errors=mock_get_inventory_with_errors,
                     max_retries=1,
                 )
 
@@ -496,11 +507,13 @@ class TestRunRatchetRedWithMocks:
         test_file.write_text("def test_calculate(): pass")
 
         inventory_calls = [0]
-        def mock_get_inventory(tests_dir):
+        def mock_get_inventory_with_errors(tests_dir):
             inventory_calls[0] += 1
             if inventory_calls[0] == 1:
-                return set()
-            return {"tests/unit/mypackage/core/test_calculate.py::test_calculate"}
+                return MockTestInventoryResult(tests=set())
+            return MockTestInventoryResult(
+                tests={"tests/unit/mypackage/core/test_calculate.py::test_calculate"}
+            )
 
         # Validation rejects
         mock_validation = ValidationResult(
@@ -529,7 +542,7 @@ class TestRunRatchetRedWithMocks:
                         unit=unit,
                         test_case=test_case,
                         production_dir=temp_production_dir,
-                        get_test_inventory=mock_get_inventory,
+                        get_test_inventory_with_errors=mock_get_inventory_with_errors,
                         max_retries=1,
                     )
 

@@ -288,7 +288,7 @@ async def run_ratchet_red(
     unit: "UnitWorkItem",
     test_case: "TestCase",
     production_dir: Path,
-    get_test_inventory: Callable[[Path], Set[str]],
+    get_test_inventory_with_errors: Callable,
     max_retries: int = MAX_RATCHET_RED_RETRIES,
 ) -> RatchetRedResult:
     """
@@ -298,7 +298,7 @@ async def run_ratchet_red(
         unit: The unit being tested
         test_case: The specific test case to implement
         production_dir: Path to production/ directory
-        get_test_inventory: Function to get set of test IDs from tests dir
+        get_test_inventory_with_errors: Function to get test IDs and collection errors
         max_retries: Maximum retry attempts
 
     Returns:
@@ -406,7 +406,13 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
                 checkpoint_id = None
 
                 # Get test inventory BEFORE agent runs
-                tests_before = get_test_inventory(tests_dir)
+                # This might return empty set if tests directory is empty or doesn't exist
+                try:
+                    inventory_before = get_test_inventory_with_errors(tests_dir)
+                    tests_before = inventory_before.tests
+                except Exception as e:
+                    logger.warning(f"[RATCHET-RED] Failed to get initial test inventory: {e}")
+                    tests_before = set()
                 logger.info(f"[RATCHET-RED] Tests before: {len(tests_before)}")
 
                 try:
@@ -429,6 +435,7 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
                         error_msg = f"Test file was not created at expected path: {expected_file}"
                         logger.error(f"[RATCHET-RED] {error_msg}")
 
+                        # Always try to rewind if we have a checkpoint
                         if checkpoint_id:
                             logger.info(f"[RATCHET-RED] Rewinding to checkpoint {checkpoint_id}")
                             await client.rewind_files(checkpoint_id)
@@ -447,9 +454,46 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
                     logger.info(f"[RATCHET-RED] Verified file exists: {expected_file}")
 
                     # Get test inventory AFTER agent runs
-                    tests_after = get_test_inventory(tests_dir)
+                    # This might fail if the test file has syntax errors or import errors
+                    try:
+                        inventory_after = get_test_inventory_with_errors(tests_dir)
+                        tests_after = inventory_after.tests
+                        collection_error = inventory_after.collection_error
+                    except Exception as e:
+                        logger.warning(f"[RATCHET-RED] Failed to get test inventory: {e}")
+                        tests_after = tests_before.copy()
+                        collection_error = str(e)
+
                     new_tests = tests_after - tests_before
                     logger.info(f"[RATCHET-RED] Tests after: {len(tests_after)}, new tests: {len(new_tests)}")
+
+                    # Check if there was a collection error (e.g., import error)
+                    if collection_error and len(new_tests) == 0:
+                        logger.warning(f"[RATCHET-RED] Test collection failed with error")
+
+                        # Rewind and retry with the collection error
+                        if checkpoint_id:
+                            logger.info(f"[RATCHET-RED] Rewinding to checkpoint {checkpoint_id}")
+                            await client.rewind_files(checkpoint_id)
+
+                        retries += 1
+                        if retries < max_retries:
+                            prompt = f"""{base_prompt}
+
+PREVIOUS ATTEMPT FAILED: Test collection failed with error.
+
+The test file was created but pytest could not collect it. Please fix the test.
+
+COLLECTION ERROR:
+{collection_error}
+"""
+                            continue
+
+                        return RatchetRedResult(
+                            success=False,
+                            error=f"Test collection failed: {collection_error[:200]}",
+                            retries=retries,
+                        )
 
                     # Validate exactly 1 new test was added
                     if len(new_tests) != 1:
@@ -586,6 +630,7 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
                             retries=retries,
                         )
                     prompt = f"{base_prompt}\n\nPREVIOUS ATTEMPT ERROR: {e}\nPlease try again."
+                    continue  # Continue to next retry iteration
 
             return RatchetRedResult(
                 success=False,
