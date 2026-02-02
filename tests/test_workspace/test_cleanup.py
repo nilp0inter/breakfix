@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from breakfix.nodes import UnitWorkItem
+from breakfix.state import UnitWorkItem
 from breakfix.workspace.cleanup import (
     stub_function_body,
     process_file,

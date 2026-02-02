@@ -13,7 +13,7 @@ from breakfix.agents.ratchet_green.agent import (
     run_pytest,
     DEVELOPER_SYSTEM_PROMPT,
 )
-from breakfix.nodes import UnitWorkItem, TestCase
+from breakfix.state import UnitWorkItem, TestCase
 
 
 class TestPermissionHandler:

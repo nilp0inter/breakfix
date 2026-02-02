@@ -13,7 +13,7 @@ from breakfix.agents.crucible.sentinel import (
     SENTINEL_SYSTEM_PROMPT,
 )
 from breakfix.agents.crucible.mutation import SurvivingMutant
-from breakfix.nodes import UnitWorkItem, TestCase
+from breakfix.state import UnitWorkItem, TestCase
 
 
 class TestPermissionHandler:

@@ -16,6 +16,9 @@
           packages = [
             pkgs.uv
           ];
+
+          # Fix for greenlet/prefect requiring libstdc++.so.6
+          LD_LIBRARY_PATH = "${pkgs.stdenv.cc.cc.lib}/lib";
         };
       });
 }

@@ -23,7 +23,7 @@ from .validator import validate_test
 from .arbiter import arbitrate_test
 
 if TYPE_CHECKING:
-    from breakfix.nodes import UnitWorkItem, TestCase
+    from breakfix.state import UnitWorkItem, TestCase
 
 
 logger = logging.getLogger(__name__)

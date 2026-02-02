@@ -10,7 +10,7 @@ from breakfix.agents.oracle.agent import (
     OracleOutput,
     TestCaseDescription,
 )
-from breakfix.nodes import UnitWorkItem, TestCase
+from breakfix.state import UnitWorkItem, TestCase
 
 
 class TestCreateOracle:

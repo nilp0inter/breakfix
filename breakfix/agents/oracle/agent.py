@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
 if TYPE_CHECKING:
-    from breakfix.nodes import UnitWorkItem, TestCase
+    from breakfix.state import UnitWorkItem, TestCase
 
 
 class TestCaseDescription(BaseModel):
@@ -150,7 +150,7 @@ async def run_oracle(
         OracleResult with populated test_cases list and description
     """
     # Import here to avoid circular imports
-    from breakfix.nodes import TestCase
+    from breakfix.state import TestCase
 
     # Skip non-function units (constants, imports don't need tests)
     if unit.symbol_type not in ("function", "class"):

@@ -19,7 +19,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
 
 if TYPE_CHECKING:
-    from breakfix.nodes import UnitWorkItem
+    from breakfix.state import UnitWorkItem
     from .mutation import SurvivingMutant
 
 

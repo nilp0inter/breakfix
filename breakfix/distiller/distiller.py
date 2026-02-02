@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List
 
-from breakfix.nodes import UnitWorkItem, TestCase
+from breakfix.state import UnitWorkItem, TestCase
 from .module_graph import get_sorted_modules, ModuleInfo
 from .symbol_graph import get_sorted_symbols, Symbol
 

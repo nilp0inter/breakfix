@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Set, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from breakfix.nodes import UnitWorkItem
+    from breakfix.state import UnitWorkItem
 
 
 @dataclass

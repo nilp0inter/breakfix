@@ -1,7 +1,10 @@
-from typing import Any, Callable, List
+from typing import Any, List
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext, Tool
+from prefect.flow_runs import pause_flow_run
+from prefect.input import RunInput
+from prefect.logging import get_run_logger
 
 
 class TestFixture(BaseModel):
@@ -35,6 +38,11 @@ class AnalystOutput(BaseModel):
     project: ProjectMetadata = Field(
         description="Project metadata for PyScaffold initialization"
     )
+
+
+class ClarificationInput(RunInput):
+    """Input model for analyst Q&A responses via Prefect UI."""
+    answer: str = Field(description="Your response to the question")
 
 
 ANALYST_SYSTEM_PROMPT = """You are a Requirements Analyst conducting a structured interview to transform
@@ -81,25 +89,35 @@ Base everything on the actual Q&A - do not invent requirements not discussed."""
 
 def create_analyst(
     model: str = "openai:gpt-5-mini",
-    input_fn: Callable[[str], str] = input
 ) -> Agent[None, AnalystOutput]:
     """
     Create the Analyst agent with ask_user tool.
 
+    The ask_user tool uses Prefect's pause_flow_run to get input from the user
+    via the Prefect UI. This requires the agent to be wrapped with PrefectAgent
+    so that tool calls run as Prefect tasks.
+
     Args:
         model: The model to use
-        input_fn: Function to get user input (injectable for testing)
 
     Returns:
-        An Agent that can be used with iter() for interactive Q&A
+        An Agent that can be used with PrefectAgent for interactive Q&A
     """
     async def ask_user(ctx: RunContext[None], question: str) -> str:
-        """Ask the user a clarifying question about their requirements."""
-        return input_fn(f"\n{question}\n> ")
+        """Ask the user a clarifying question via Prefect UI."""
+        logger = get_run_logger()
+        logger.info(f"[ANALYST] Question: {question}")
+
+        response = await pause_flow_run(
+            wait_for_input=ClarificationInput,
+            timeout=3600,  # 1 hour timeout
+        )
+        return response.answer
 
     return Agent(
         model,
         output_type=AnalystOutput,
         system_prompt=ANALYST_SYSTEM_PROMPT,
         tools=[Tool(ask_user)],
+        name="analyst",  # Required for PrefectAgent
     )

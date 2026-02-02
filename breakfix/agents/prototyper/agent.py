@@ -29,7 +29,7 @@ async def run_prototyper(
     spec: str,
     fixtures: List[TestFixture],
     package_name: str,
-    run_e2e_test: Callable,  # Injected test runner
+    run_e2e_test: Callable[[Path], Awaitable],  # Injected test runner (takes proto_dir)
     interface_description: str = "",  # Description of expected I/O interface
 ) -> PrototyperResult:
     """
@@ -71,8 +71,8 @@ async def run_prototyper(
         for iteration in range(1, MAX_PROTOTYPER_ITERATIONS + 1):
             logger.info(f"[PROTOTYPER] Iteration {iteration}/{MAX_PROTOTYPER_ITERATIONS}: Running E2E tests...")
 
-            # Run E2E tests
-            test_result = await run_e2e_test(proto_dir, package_name)
+            # Run E2E tests (closure captures package_name)
+            test_result = await run_e2e_test(proto_dir)
 
             if test_result.success:
                 logger.info(f"[PROTOTYPER] E2E tests passed on iteration {iteration}")

@@ -27,7 +27,7 @@ from .coverage import (
 )
 
 if TYPE_CHECKING:
-    from breakfix.nodes import UnitWorkItem, TestCase
+    from breakfix.state import UnitWorkItem, TestCase
 
 
 logger = logging.getLogger(__name__)

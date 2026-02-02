@@ -26,7 +26,7 @@ from breakfix.agents.ratchet_red.arbiter import (
     _mark_offending_test,
     ARBITER_SYSTEM_PROMPT,
 )
-from breakfix.nodes import UnitWorkItem, TestCase
+from breakfix.state import UnitWorkItem, TestCase
 
 
 @dataclass
