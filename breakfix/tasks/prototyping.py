@@ -17,7 +17,7 @@ class PrototypingError(Exception):
     pass
 
 
-@task(persist_result=True, name="prototyping")
+@task(persist_result=True, name="prototyping", log_prints=True)
 async def prototyping_task(
     state: ProjectState,
     config: BreakFixConfig | None = None,

@@ -395,7 +395,7 @@ async def mutation_artifacts(
 
     # Surviving mutants table (if any)
     if surviving_mutants:
-        survivors = [{"ID": m.id, "Description": m.description} for m in surviving_mutants]
+        survivors = [{"ID": m.id, "Diff": m.diff} for m in surviving_mutants]
         await create_table_artifact(
             table=survivors,
             key=f"mutation-{key_base}-survivors",
@@ -448,4 +448,163 @@ async def optimization_artifacts(unit_name: str, success: bool) -> None:
         markdown=md,
         key=f"optimization-{key_base}",
         description=f"Optimization result for {unit_name}",
+    )
+
+
+# =============================================================================
+# Agent Visibility Artifacts
+# =============================================================================
+
+
+async def agent_input_artifact(
+    agent_name: str,
+    prompt: str,
+    context: dict | None = None,
+    task_id: str = "",
+) -> None:
+    """Create artifact showing what was sent to an agent.
+
+    Args:
+        agent_name: Name of the agent (e.g., "prototyper", "ratchet-red")
+        prompt: The prompt sent to the agent
+        context: Optional context dict with additional info
+        task_id: Optional unique ID to differentiate multiple calls
+    """
+    key_base = sanitize_key(agent_name)
+    key_suffix = f"-{sanitize_key(task_id)}" if task_id else ""
+
+    md = f"""# Agent Input: {agent_name}
+
+## Prompt
+```
+{prompt[:3000]}{"..." if len(prompt) > 3000 else ""}
+```
+"""
+    if context:
+        md += "\n## Context\n"
+        for k, v in context.items():
+            val_str = str(v)[:500]
+            md += f"- **{k}:** {val_str}\n"
+
+    await create_markdown_artifact(
+        markdown=md,
+        key=f"agent-input-{key_base}{key_suffix}",
+        description=f"Input sent to {agent_name} agent",
+    )
+
+
+async def agent_output_artifact(
+    agent_name: str,
+    result: str,
+    success: bool = True,
+    duration_seconds: float | None = None,
+    task_id: str = "",
+) -> None:
+    """Create artifact showing what an agent returned.
+
+    Args:
+        agent_name: Name of the agent
+        result: The result/output from the agent
+        success: Whether the agent succeeded
+        duration_seconds: How long the agent took
+        task_id: Optional unique ID to differentiate multiple calls
+    """
+    key_base = sanitize_key(agent_name)
+    key_suffix = f"-{sanitize_key(task_id)}" if task_id else ""
+    status = "SUCCESS" if success else "FAILED"
+
+    md = f"""# Agent Output: {agent_name}
+
+**Status:** {status}
+"""
+    if duration_seconds is not None:
+        md += f"**Duration:** {duration_seconds:.1f}s\n"
+
+    md += f"""
+## Result
+```
+{result[:5000]}{"..." if len(result) > 5000 else ""}
+```
+"""
+
+    await create_markdown_artifact(
+        markdown=md,
+        key=f"agent-output-{key_base}{key_suffix}",
+        description=f"Output from {agent_name} agent",
+    )
+
+
+async def agent_iteration_artifact(
+    agent_name: str,
+    iteration: int,
+    max_iterations: int,
+    status: str,
+    details: str = "",
+    task_id: str = "",
+) -> None:
+    """Create artifact showing agent iteration progress.
+
+    Args:
+        agent_name: Name of the agent
+        iteration: Current iteration number
+        max_iterations: Maximum iterations allowed
+        status: Current status (e.g., "running", "retrying", "succeeded", "failed")
+        details: Additional details about this iteration
+        task_id: Optional unique ID to differentiate multiple calls
+    """
+    key_base = sanitize_key(agent_name)
+    key_suffix = f"-{sanitize_key(task_id)}" if task_id else ""
+
+    md = f"""# Agent Iteration: {agent_name}
+
+**Iteration:** {iteration}/{max_iterations}
+**Status:** {status}
+"""
+    if details:
+        md += f"""
+## Details
+```
+{details[:2000]}{"..." if len(details) > 2000 else ""}
+```
+"""
+
+    await create_markdown_artifact(
+        markdown=md,
+        key=f"agent-iter-{key_base}{key_suffix}-{iteration}",
+        description=f"{agent_name} iteration {iteration}/{max_iterations}",
+    )
+
+
+async def agent_message_artifact(
+    agent_name: str,
+    message_type: str,
+    content: str,
+    task_id: str = "",
+) -> None:
+    """Create artifact for a specific agent message/event.
+
+    Args:
+        agent_name: Name of the agent
+        message_type: Type of message (e.g., "tool_call", "response", "error")
+        content: The message content
+        task_id: Optional unique ID to differentiate multiple calls
+    """
+    key_base = sanitize_key(agent_name)
+    key_suffix = f"-{sanitize_key(task_id)}" if task_id else ""
+    msg_key = sanitize_key(message_type)
+
+    md = f"""# Agent Message: {agent_name}
+
+**Type:** {message_type}
+
+## Content
+```
+{content[:3000]}{"..." if len(content) > 3000 else ""}
+```
+"""
+
+    await create_markdown_artifact(
+        markdown=md,
+        key=f"agent-msg-{key_base}{key_suffix}-{msg_key}",
+        description=f"{agent_name} {message_type}",
     )

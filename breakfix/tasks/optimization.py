@@ -23,7 +23,7 @@ class OptimizationTaskResult:
     optimized_code: str
 
 
-@task(persist_result=True, name="optimization")
+@task(persist_result=True, name="optimization", log_prints=True)
 async def optimization_task(
     unit: UnitWorkItem,
     working_directory: str,

@@ -1,7 +1,7 @@
 """Ratchet Red Phase - Tester agent that writes exactly ONE failing test."""
-import logging
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Set
@@ -13,6 +13,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     UserMessage,
     TextBlock,
+    ToolUseBlock,
     HookMatcher,
     PreToolUseHookInput,
     HookContext,
@@ -21,12 +22,14 @@ from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
 
 from .validator import validate_test
 from .arbiter import arbitrate_test
+from breakfix.artifacts import (
+    agent_input_artifact,
+    agent_output_artifact,
+    agent_iteration_artifact,
+)
 
 if TYPE_CHECKING:
     from breakfix.state import UnitWorkItem, TestCase
-
-
-logger = logging.getLogger(__name__)
 
 MAX_RATCHET_RED_RETRIES = 3
 
@@ -53,7 +56,7 @@ def run_pytest(production_dir: Path, test_file: str) -> PytestResult:
     """Run pytest on the specific test file to verify it fails."""
     pytest_path = production_dir / ".venv" / "bin" / "pytest"
 
-    logger.info(f"[RATCHET-RED] Running pytest: {pytest_path} -v {test_file}")
+    print(f"[RATCHET-RED] Running pytest: {pytest_path} -v {test_file}")
 
     try:
         result = subprocess.run(
@@ -68,18 +71,26 @@ def run_pytest(production_dir: Path, test_file: str) -> PytestResult:
         if result.stderr:
             output += "\n" + result.stderr
 
-        logger.info(f"[RATCHET-RED] Pytest return code: {result.returncode}")
+        status = "PASSED" if result.returncode == 0 else "FAILED"
+        print(f"[RATCHET-RED] Pytest {status} (return code: {result.returncode})")
+
+        # Show summary of output
+        for line in output.split("\n")[-10:]:
+            if line.strip():
+                print(f"[RATCHET-RED]   {line[:100]}")
 
         return PytestResult(
             success=(result.returncode == 0),
             output=output,
         )
     except subprocess.TimeoutExpired:
+        print("[RATCHET-RED] Pytest TIMEOUT after 120 seconds")
         return PytestResult(
             success=False,
             output="Pytest timed out after 120 seconds",
         )
     except Exception as e:
+        print(f"[RATCHET-RED] Pytest ERROR: {e}")
         return PytestResult(
             success=False,
             output=f"Failed to run pytest: {e}",
@@ -190,21 +201,29 @@ After writing the test, say "Test written" and stop.
 
 
 def _log_message(message):
-    """Log messages from Claude SDK."""
+    """Log messages from Claude SDK with detailed output."""
     if isinstance(message, AssistantMessage):
-        logger.info("[TESTER] Assistant message:")
+        print("[RATCHET-RED] Claude response:")
         for block in message.content:
             if isinstance(block, TextBlock):
-                for line in block.text.split('\n')[:10]:  # First 10 lines
-                    logger.info(f"  {line}")
-                if len(block.text.split('\n')) > 10:
-                    logger.info("  ...")
+                lines = block.text.split('\n')[:8]
+                for line in lines:
+                    print(f"[RATCHET-RED]   {line[:100]}")
+                if len(block.text.split('\n')) > 8:
+                    print("[RATCHET-RED]   ... (more text)")
+            elif isinstance(block, ToolUseBlock):
+                print(f"[RATCHET-RED]   Tool: {block.name}")
+                if hasattr(block, "input") and block.input:
+                    if "file_path" in block.input:
+                        print(f"[RATCHET-RED]     file: {block.input['file_path']}")
             else:
-                logger.info(f"  {type(block).__name__}")
+                print(f"[RATCHET-RED]   {type(block).__name__}")
     elif isinstance(message, UserMessage):
-        logger.info(f"[TESTER] User message: {str(message.content)[:100]}...")
+        content_str = str(message.content)[:80]
+        print(f"[RATCHET-RED] User/Tool result: {content_str}...")
     elif isinstance(message, ResultMessage):
-        logger.info(f"[TESTER] Result: is_error={message.is_error}")
+        status = "ERROR" if message.is_error else "COMPLETE"
+        print(f"[RATCHET-RED] Agent {status}")
 
 
 def _extract_signature(code: str) -> str:
@@ -398,6 +417,27 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
 
     retries = 0
     prompt = base_prompt
+    start_time = time.time()
+    task_id = f"{unit.name}-{test_case.id}"
+
+    print("[RATCHET-RED] ========================================")
+    print(f"[RATCHET-RED] Starting RED phase for: {unit.name}")
+    print(f"[RATCHET-RED] Test case: {test_case.description[:60]}...")
+    print(f"[RATCHET-RED] Target file: {test_file_path}")
+    print("[RATCHET-RED] ========================================")
+
+    # Create input artifact
+    await agent_input_artifact(
+        agent_name="ratchet-red",
+        prompt=base_prompt,
+        context={
+            "unit_name": unit.name,
+            "test_case_id": test_case.id,
+            "test_file_path": test_file_path,
+            "test_function_name": test_function_name,
+        },
+        task_id=task_id,
+    )
 
     try:
         # Context manager OUTSIDE retry loop to preserve conversation context
@@ -411,20 +451,33 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
                     inventory_before = get_test_inventory_with_errors(tests_dir)
                     tests_before = inventory_before.tests
                 except Exception as e:
-                    logger.warning(f"[RATCHET-RED] Failed to get initial test inventory: {e}")
+                    print(f"[RATCHET-RED] Warning: Failed to get initial test inventory: {e}")
                     tests_before = set()
-                logger.info(f"[RATCHET-RED] Tests before: {len(tests_before)}")
+                print(f"[RATCHET-RED] Tests before: {len(tests_before)}")
 
                 try:
-                    logger.info(f"[RATCHET-RED] Sending prompt to tester agent (attempt {retries + 1}/{max_retries})")
+                    print(f"[RATCHET-RED] ----------------------------------------")
+                    print(f"[RATCHET-RED] Attempt {retries + 1}/{max_retries}")
+                    print(f"[RATCHET-RED] Sending prompt to tester agent...")
+
+                    await agent_iteration_artifact(
+                        agent_name="ratchet-red",
+                        iteration=retries + 1,
+                        max_iterations=max_retries,
+                        status="sending_prompt",
+                        details=f"Writing test for: {test_case.description[:100]}",
+                        task_id=task_id,
+                    )
+
                     await client.query(prompt)
 
                     # Capture checkpoint from first user message and process responses
+                    print("[RATCHET-RED] Waiting for Claude response...")
                     async for message in client.receive_response():
                         _log_message(message)
                         if isinstance(message, UserMessage) and hasattr(message, 'uuid') and message.uuid and not checkpoint_id:
                             checkpoint_id = message.uuid
-                            logger.info(f"[RATCHET-RED] Captured checkpoint: {checkpoint_id}")
+                            print(f"[RATCHET-RED] Captured checkpoint: {checkpoint_id[:20]}...")
                         if isinstance(message, ResultMessage):
                             if message.is_error:
                                 raise Exception(message.result or "Agent error")
@@ -433,11 +486,11 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
                     expected_file = production_dir / test_file_path
                     if not expected_file.exists():
                         error_msg = f"Test file was not created at expected path: {expected_file}"
-                        logger.error(f"[RATCHET-RED] {error_msg}")
+                        print(f"[RATCHET-RED] ERROR: {error_msg}")
 
                         # Always try to rewind if we have a checkpoint
                         if checkpoint_id:
-                            logger.info(f"[RATCHET-RED] Rewinding to checkpoint {checkpoint_id}")
+                            print(f"[RATCHET-RED] Rewinding to checkpoint...")
                             await client.rewind_files(checkpoint_id)
 
                         retries += 1
@@ -445,13 +498,21 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
                             prompt = f"{base_prompt}\n\nPREVIOUS ATTEMPT FAILED: {error_msg}\nMake sure to create the file at the EXACT path specified."
                             continue
 
+                        duration = time.time() - start_time
+                        await agent_output_artifact(
+                            agent_name="ratchet-red",
+                            result=error_msg,
+                            success=False,
+                            duration_seconds=duration,
+                            task_id=task_id,
+                        )
                         return RatchetRedResult(
                             success=False,
                             error=error_msg,
                             retries=retries,
                         )
 
-                    logger.info(f"[RATCHET-RED] Verified file exists: {expected_file}")
+                    print(f"[RATCHET-RED] Verified file exists: {expected_file}")
 
                     # Get test inventory AFTER agent runs
                     # This might fail if the test file has syntax errors or import errors
@@ -460,20 +521,20 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
                         tests_after = inventory_after.tests
                         collection_error = inventory_after.collection_error
                     except Exception as e:
-                        logger.warning(f"[RATCHET-RED] Failed to get test inventory: {e}")
+                        print(f"[RATCHET-RED] Warning: Failed to get test inventory: {e}")
                         tests_after = tests_before.copy()
                         collection_error = str(e)
 
                     new_tests = tests_after - tests_before
-                    logger.info(f"[RATCHET-RED] Tests after: {len(tests_after)}, new tests: {len(new_tests)}")
+                    print(f"[RATCHET-RED] Tests after: {len(tests_after)}, new tests: {len(new_tests)}")
 
                     # Check if there was a collection error (e.g., import error)
                     if collection_error and len(new_tests) == 0:
-                        logger.warning(f"[RATCHET-RED] Test collection failed with error")
+                        print(f"[RATCHET-RED] Test collection failed with error")
 
                         # Rewind and retry with the collection error
                         if checkpoint_id:
-                            logger.info(f"[RATCHET-RED] Rewinding to checkpoint {checkpoint_id}")
+                            print(f"[RATCHET-RED] Rewinding to checkpoint...")
                             await client.rewind_files(checkpoint_id)
 
                         retries += 1
@@ -500,11 +561,11 @@ COLLECTION ERROR:
                         error_msg = f"Expected exactly 1 new test, got {len(new_tests)}"
                         if new_tests:
                             error_msg += f": {new_tests}"
-                        logger.warning(f"[RATCHET-RED] Validation failed: {error_msg}")
+                        print(f"[RATCHET-RED] Validation failed: {error_msg}")
 
                         # Rewind and retry
                         if checkpoint_id:
-                            logger.info(f"[RATCHET-RED] Rewinding to checkpoint {checkpoint_id}")
+                            print(f"[RATCHET-RED] Rewinding to checkpoint...")
                             await client.rewind_files(checkpoint_id)
 
                         retries += 1
@@ -520,10 +581,10 @@ COLLECTION ERROR:
 
                     # We have exactly 1 new test - run final validation
                     new_test_id = new_tests.pop()
-                    logger.info(f"[RATCHET-RED] New test: {new_test_id}")
+                    print(f"[RATCHET-RED] New test: {new_test_id}")
 
                     # Final validation: verify test adheres to specification
-                    logger.info("[RATCHET-RED] Running Pydantic AI validation...")
+                    print("[RATCHET-RED] Running Pydantic AI validation...")
                     validation = await validate_test(
                         unit_name=unit.name,
                         unit_code=unit_signature,  # Use signature only, not prototype code
@@ -533,11 +594,11 @@ COLLECTION ERROR:
                     )
 
                     if not validation.is_valid:
-                        logger.warning(f"[RATCHET-RED] Validation rejected: {validation.reason}")
+                        print(f"[RATCHET-RED] Validation rejected: {validation.reason}")
 
                         # Rewind and retry with feedback
                         if checkpoint_id:
-                            logger.info(f"[RATCHET-RED] Rewinding to checkpoint {checkpoint_id}")
+                            print(f"[RATCHET-RED] Rewinding to checkpoint...")
                             await client.rewind_files(checkpoint_id)
 
                         retries += 1
@@ -552,16 +613,16 @@ COLLECTION ERROR:
                         )
 
                     # Validation passed - now run pytest to verify test fails
-                    logger.info("[RATCHET-RED] Running pytest to verify test fails...")
+                    print("[RATCHET-RED] Running pytest to verify test fails...")
                     pytest_result = run_pytest(production_dir, new_test_id)
 
                     if pytest_result.success:
                         # Test passed! This is wrong - it should fail
-                        logger.warning("[RATCHET-RED] Test passed but should fail!")
+                        print("[RATCHET-RED] WARNING: Test PASSED but should FAIL!")
 
                         # After 2 tries, invoke the arbiter to decide keep/discard
                         if retries >= 1:
-                            logger.info("[RATCHET-RED] Test passed twice. Invoking Test Arbiter...")
+                            print("[RATCHET-RED] Test passed twice. Invoking Test Arbiter...")
 
                             decision = await arbitrate_test(
                                 test_spec=test_case.description,
@@ -571,12 +632,20 @@ COLLECTION ERROR:
                             )
 
                             if decision.keep_test:
-                                logger.info(
+                                print(
                                     f"[RATCHET-RED] Arbiter: KEEP test "
                                     f"(confidence={decision.confidence_value}, "
                                     f"communication={decision.communication_value})"
                                 )
-                                logger.info(f"[RATCHET-RED] Reasoning: {decision.reasoning}")
+                                print(f"[RATCHET-RED] Reasoning: {decision.reasoning}")
+                                duration = time.time() - start_time
+                                await agent_output_artifact(
+                                    agent_name="ratchet-red",
+                                    result=f"Test kept by arbiter: {new_test_id}",
+                                    success=True,
+                                    duration_seconds=duration,
+                                    task_id=task_id,
+                                )
                                 return RatchetRedResult(
                                     success=True,
                                     test_file_path=new_test_id,
@@ -584,10 +653,18 @@ COLLECTION ERROR:
                                     skipped_green=True,  # Skip Green phase
                                 )
                             else:
-                                logger.info(f"[RATCHET-RED] Arbiter: DISCARD test - {decision.reasoning}")
+                                print(f"[RATCHET-RED] Arbiter: DISCARD test - {decision.reasoning}")
                                 if checkpoint_id:
-                                    logger.info(f"[RATCHET-RED] Rewinding to checkpoint {checkpoint_id}")
+                                    print(f"[RATCHET-RED] Rewinding to checkpoint...")
                                     await client.rewind_files(checkpoint_id)
+                                duration = time.time() - start_time
+                                await agent_output_artifact(
+                                    agent_name="ratchet-red",
+                                    result=f"Test discarded by arbiter: {decision.reasoning}",
+                                    success=True,
+                                    duration_seconds=duration,
+                                    task_id=task_id,
+                                )
                                 return RatchetRedResult(
                                     success=True,  # Not a failure, just skipped
                                     test_file_path="",
@@ -597,7 +674,7 @@ COLLECTION ERROR:
 
                         # First try - rewind and retry
                         if checkpoint_id:
-                            logger.info(f"[RATCHET-RED] Rewinding to checkpoint {checkpoint_id}")
+                            print(f"[RATCHET-RED] Rewinding to checkpoint...")
                             await client.rewind_files(checkpoint_id)
 
                         retries += 1
@@ -612,7 +689,15 @@ COLLECTION ERROR:
                         )
 
                     # Test failed as expected - success!
-                    logger.info(f"[RATCHET-RED] Test fails as expected: {new_test_id}")
+                    print(f"[RATCHET-RED] SUCCESS: Test fails as expected: {new_test_id}")
+                    duration = time.time() - start_time
+                    await agent_output_artifact(
+                        agent_name="ratchet-red",
+                        result=f"Test written successfully: {new_test_id}\nPytest output:\n{pytest_result.output[:500]}",
+                        success=True,
+                        duration_seconds=duration,
+                        task_id=task_id,
+                    )
                     return RatchetRedResult(
                         success=True,
                         test_file_path=new_test_id,
@@ -621,9 +706,17 @@ COLLECTION ERROR:
                     )
 
                 except Exception as e:
-                    logger.error(f"[RATCHET-RED] Error: {e}")
+                    print(f"[RATCHET-RED] ERROR: {e}")
                     retries += 1
                     if retries >= max_retries:
+                        duration = time.time() - start_time
+                        await agent_output_artifact(
+                            agent_name="ratchet-red",
+                            result=str(e),
+                            success=False,
+                            duration_seconds=duration,
+                            task_id=task_id,
+                        )
                         return RatchetRedResult(
                             success=False,
                             error=str(e),
@@ -632,6 +725,14 @@ COLLECTION ERROR:
                     prompt = f"{base_prompt}\n\nPREVIOUS ATTEMPT ERROR: {e}\nPlease try again."
                     continue  # Continue to next retry iteration
 
+            duration = time.time() - start_time
+            await agent_output_artifact(
+                agent_name="ratchet-red",
+                result="Max retries exceeded",
+                success=False,
+                duration_seconds=duration,
+                task_id=task_id,
+            )
             return RatchetRedResult(
                 success=False,
                 error="Max retries exceeded",
@@ -639,7 +740,15 @@ COLLECTION ERROR:
             )
 
     except Exception as e:
-        logger.error(f"[RATCHET-RED] Fatal error: {e}")
+        print(f"[RATCHET-RED] FATAL ERROR: {e}")
+        duration = time.time() - start_time
+        await agent_output_artifact(
+            agent_name="ratchet-red",
+            result=f"Fatal error: {e}",
+            success=False,
+            duration_seconds=duration,
+            task_id=task_id,
+        )
         return RatchetRedResult(
             success=False,
             error=str(e),

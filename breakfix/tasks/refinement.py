@@ -17,7 +17,7 @@ class RefinementError(Exception):
     pass
 
 
-@task(persist_result=True, name="refinement")
+@task(persist_result=True, name="refinement", log_prints=True)
 async def refinement_task(
     state: ProjectState,
     config: BreakFixConfig | None = None,

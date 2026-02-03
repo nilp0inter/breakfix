@@ -19,6 +19,7 @@ from breakfix.flows.unit_flow import oracle_and_ratchet_flow
     name="breakfix-project",
     description="Transform user idea into tested Python software",
     persist_result=True,
+    log_prints=True,
 )
 async def breakfix_project_flow(
     working_directory: str,

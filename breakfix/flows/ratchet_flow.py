@@ -12,6 +12,7 @@ from breakfix.tasks import ratchet_red_task, ratchet_green_task
     name="ratchet-cycle",
     description="TDD Red-Green cycle for a single test case",
     persist_result=True,
+    log_prints=True,
 )
 async def ratchet_cycle_flow(
     unit: UnitWorkItem,

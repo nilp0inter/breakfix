@@ -28,7 +28,7 @@ class RatchetRedTaskResult:
     retries: int
 
 
-@task(persist_result=True, retries=3, retry_delay_seconds=10, name="ratchet-red")
+@task(persist_result=True, retries=3, retry_delay_seconds=10, name="ratchet-red", log_prints=True)
 async def ratchet_red_task(
     unit: UnitWorkItem,
     test_case: TestCase,

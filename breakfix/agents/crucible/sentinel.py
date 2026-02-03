@@ -1,7 +1,7 @@
 """Sentinel agent that writes tests to kill surviving mutants."""
 
-import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,17 +13,17 @@ from claude_agent_sdk import (
     AssistantMessage,
     UserMessage,
     TextBlock,
+    ToolUseBlock,
     HookMatcher,
     HookContext,
 )
 from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
 
+from breakfix.artifacts import agent_input_artifact, agent_output_artifact
+
 if TYPE_CHECKING:
     from breakfix.state import UnitWorkItem
     from .mutation import SurvivingMutant
-
-
-logger = logging.getLogger(__name__)
 
 MAX_SENTINEL_RETRIES = 3
 
@@ -114,21 +114,29 @@ After writing the test, say "Test written" and stop.
 
 
 def _log_message(message):
-    """Log messages from Claude SDK."""
+    """Log messages from Claude SDK with detailed output."""
     if isinstance(message, AssistantMessage):
-        logger.info("[SENTINEL] Assistant message:")
+        print("[SENTINEL] Claude response:")
         for block in message.content:
             if isinstance(block, TextBlock):
-                for line in block.text.split('\n')[:10]:
-                    logger.info(f"  {line}")
-                if len(block.text.split('\n')) > 10:
-                    logger.info("  ...")
+                lines = block.text.split('\n')[:8]
+                for line in lines:
+                    print(f"[SENTINEL]   {line[:100]}")
+                if len(block.text.split('\n')) > 8:
+                    print("[SENTINEL]   ... (more text)")
+            elif isinstance(block, ToolUseBlock):
+                print(f"[SENTINEL]   Tool: {block.name}")
+                if hasattr(block, "input") and block.input:
+                    if "file_path" in block.input:
+                        print(f"[SENTINEL]     file: {block.input['file_path']}")
             else:
-                logger.info(f"  {type(block).__name__}")
+                print(f"[SENTINEL]   {type(block).__name__}")
     elif isinstance(message, UserMessage):
-        logger.info(f"[SENTINEL] User message: {str(message.content)[:100]}...")
+        content_str = str(message.content)[:80]
+        print(f"[SENTINEL] User/Tool result: {content_str}...")
     elif isinstance(message, ResultMessage):
-        logger.info(f"[SENTINEL] Result: is_error={message.is_error}")
+        status = "ERROR" if message.is_error else "COMPLETE"
+        print(f"[SENTINEL] Agent {status}")
 
 
 def _calculate_test_file_path(unit_name: str) -> str:
@@ -170,16 +178,22 @@ async def run_sentinel(
         SentinelResult with success status and test file path
     """
     production_dir = Path(production_dir)
+    start_time = time.time()
+    task_id = f"{unit.name}-mutant-{mutant.id}"
 
     # Calculate test file path
     test_file_path = _calculate_test_file_path(unit.name)
     test_file_abs = production_dir / test_file_path
 
-    logger.info(f"[SENTINEL] Targeting mutant {mutant.id}")
-    logger.info(f"[SENTINEL] Test file: {test_file_path}")
+    print("[SENTINEL] ========================================")
+    print(f"[SENTINEL] Targeting mutant {mutant.id}")
+    print(f"[SENTINEL] Unit: {unit.name}")
+    print(f"[SENTINEL] Test file: {test_file_path}")
+    print("[SENTINEL] ========================================")
 
     # Ensure test file exists (it should from Ratchet phase)
     if not test_file_abs.exists():
+        print(f"[SENTINEL] ERROR: Test file does not exist: {test_file_path}")
         return SentinelResult(
             success=False,
             error=f"Test file does not exist: {test_file_path}. "
@@ -281,21 +295,36 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU.
     retries = 0
     prompt = base_prompt
 
+    # Create input artifact
+    await agent_input_artifact(
+        agent_name="sentinel",
+        prompt=base_prompt,
+        context={
+            "unit_name": unit.name,
+            "mutant_id": mutant.id,
+            "test_file": test_file_path,
+        },
+        task_id=task_id,
+    )
+
     try:
         async with ClaudeSDKClient(options=options) as client:
             while retries < max_retries:
                 checkpoint_id = None
 
                 try:
-                    logger.info(f"[SENTINEL] Sending prompt (attempt {retries + 1}/{max_retries})")
+                    print(f"[SENTINEL] ----------------------------------------")
+                    print(f"[SENTINEL] Attempt {retries + 1}/{max_retries}")
+                    print(f"[SENTINEL] Sending prompt...")
                     await client.query(prompt)
 
                     # Process response and capture checkpoint
+                    print("[SENTINEL] Waiting for Claude response...")
                     async for message in client.receive_response():
                         _log_message(message)
                         if isinstance(message, UserMessage) and hasattr(message, 'uuid') and message.uuid and not checkpoint_id:
                             checkpoint_id = message.uuid
-                            logger.info(f"[SENTINEL] Captured checkpoint: {checkpoint_id}")
+                            print(f"[SENTINEL] Captured checkpoint: {checkpoint_id[:20]}...")
                         if isinstance(message, ResultMessage):
                             if message.is_error:
                                 raise Exception(message.result or "Agent error")
@@ -304,7 +333,7 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU.
                     new_content = test_file_abs.read_text()
                     if new_content == existing_tests:
                         error_msg = "Test file was not modified. Please add a new test."
-                        logger.warning(f"[SENTINEL] {error_msg}")
+                        print(f"[SENTINEL] WARNING: {error_msg}")
 
                         if checkpoint_id:
                             await client.rewind_files(checkpoint_id)
@@ -314,6 +343,14 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU.
                             prompt = f"{base_prompt}\n\nPREVIOUS ATTEMPT FAILED: {error_msg}"
                             continue
 
+                        duration = time.time() - start_time
+                        await agent_output_artifact(
+                            agent_name="sentinel",
+                            result=error_msg,
+                            success=False,
+                            duration_seconds=duration,
+                            task_id=task_id,
+                        )
                         return SentinelResult(
                             success=False,
                             error=error_msg,
@@ -328,7 +365,7 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU.
 
                     if len(added_tests) == 0:
                         error_msg = "No new test function was added."
-                        logger.warning(f"[SENTINEL] {error_msg}")
+                        print(f"[SENTINEL] WARNING: {error_msg}")
 
                         if checkpoint_id:
                             await client.rewind_files(checkpoint_id)
@@ -338,6 +375,14 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU.
                             prompt = f"{base_prompt}\n\nPREVIOUS ATTEMPT FAILED: {error_msg}"
                             continue
 
+                        duration = time.time() - start_time
+                        await agent_output_artifact(
+                            agent_name="sentinel",
+                            result=error_msg,
+                            success=False,
+                            duration_seconds=duration,
+                            task_id=task_id,
+                        )
                         return SentinelResult(
                             success=False,
                             error=error_msg,
@@ -345,13 +390,21 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU.
                         )
 
                     if len(added_tests) > 1:
-                        logger.warning(f"[SENTINEL] Multiple tests added: {added_tests}. Keeping them all.")
+                        print(f"[SENTINEL] Note: Multiple tests added: {added_tests}. Keeping them all.")
 
-                    logger.info(f"[SENTINEL] New test(s) added: {added_tests}")
+                    print(f"[SENTINEL] SUCCESS: New test(s) added: {added_tests}")
 
                     # Update existing_tests for next iteration if needed
                     existing_tests = new_content
 
+                    duration = time.time() - start_time
+                    await agent_output_artifact(
+                        agent_name="sentinel",
+                        result=f"Added test(s) to kill mutant {mutant.id}: {added_tests}",
+                        success=True,
+                        duration_seconds=duration,
+                        task_id=task_id,
+                    )
                     return SentinelResult(
                         success=True,
                         test_file_path=test_file_path,
@@ -359,9 +412,17 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU.
                     )
 
                 except Exception as e:
-                    logger.error(f"[SENTINEL] Error: {e}")
+                    print(f"[SENTINEL] ERROR: {e}")
                     retries += 1
                     if retries >= max_retries:
+                        duration = time.time() - start_time
+                        await agent_output_artifact(
+                            agent_name="sentinel",
+                            result=str(e),
+                            success=False,
+                            duration_seconds=duration,
+                            task_id=task_id,
+                        )
                         return SentinelResult(
                             success=False,
                             error=str(e),
@@ -369,6 +430,14 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU.
                         )
                     prompt = f"{base_prompt}\n\nPREVIOUS ATTEMPT ERROR: {e}\nPlease try again."
 
+            duration = time.time() - start_time
+            await agent_output_artifact(
+                agent_name="sentinel",
+                result="Max retries exceeded",
+                success=False,
+                duration_seconds=duration,
+                task_id=task_id,
+            )
             return SentinelResult(
                 success=False,
                 error="Max retries exceeded",
@@ -376,7 +445,15 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU.
             )
 
     except Exception as e:
-        logger.error(f"[SENTINEL] Fatal error: {e}")
+        print(f"[SENTINEL] FATAL ERROR: {e}")
+        duration = time.time() - start_time
+        await agent_output_artifact(
+            agent_name="sentinel",
+            result=f"Fatal error: {e}",
+            success=False,
+            duration_seconds=duration,
+            task_id=task_id,
+        )
         return SentinelResult(
             success=False,
             error=str(e),

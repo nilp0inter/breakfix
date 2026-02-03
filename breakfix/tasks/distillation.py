@@ -18,7 +18,7 @@ class DistillationError(Exception):
     pass
 
 
-@task(persist_result=True, name="distillation")
+@task(persist_result=True, name="distillation", log_prints=True)
 async def distillation_task(
     state: ProjectState,
     config: BreakFixConfig | None = None,

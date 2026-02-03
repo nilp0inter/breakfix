@@ -26,7 +26,7 @@ class OracleTaskResult:
     test_cases: List[TestCase]
 
 
-@task(persist_result=True, name="oracle")
+@task(persist_result=True, name="oracle", log_prints=True)
 async def oracle_task(
     unit: UnitWorkItem,
     config: BreakFixConfig | None = None,

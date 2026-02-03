@@ -1,9 +1,12 @@
 """Oracle agent - generates test descriptions from code."""
+import time
 from dataclasses import dataclass, field
 from typing import List, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
+
+from breakfix.artifacts import agent_input_artifact, agent_output_artifact
 
 if TYPE_CHECKING:
     from breakfix.state import UnitWorkItem, TestCase
@@ -152,8 +155,16 @@ async def run_oracle(
     # Import here to avoid circular imports
     from breakfix.state import TestCase
 
+    print("[ORACLE] ========================================")
+    print(f"[ORACLE] Analyzing unit: {unit.name}")
+    print(f"[ORACLE] Type: {unit.symbol_type}")
+    print("[ORACLE] ========================================")
+
+    start_time = time.time()
+
     # Skip non-function units (constants, imports don't need tests)
     if unit.symbol_type not in ("function", "class"):
+        print(f"[ORACLE] Skipping {unit.name} - not a function or class")
         return OracleResult(success=True, test_cases=[])
 
     try:
@@ -170,8 +181,25 @@ Dependencies: {', '.join(unit.dependencies) if unit.dependencies else 'None'}
 
 Generate specific test case descriptions for this code."""
 
+        # Create input artifact
+        await agent_input_artifact(
+            agent_name="oracle",
+            prompt=prompt,
+            context={
+                "unit_name": unit.name,
+                "symbol_type": unit.symbol_type,
+                "model": model,
+            },
+            task_id=unit.name,
+        )
+
+        print(f"[ORACLE] Sending code to LLM ({model})...")
         result = await agent.run(prompt)
         output = result.output
+
+        print(f"[ORACLE] Received {len(output.test_cases)} test cases")
+        for i, tc in enumerate(output.test_cases):
+            print(f"[ORACLE]   {i+1}. {tc.test_function_name}")
 
         # Convert to TestCase objects with sequential IDs
         # Format the structured description into a precise string
@@ -186,6 +214,17 @@ Generate specific test case descriptions for this code."""
             for i, tc in enumerate(output.test_cases)
         ]
 
+        duration = time.time() - start_time
+        await agent_output_artifact(
+            agent_name="oracle",
+            result=f"Generated {len(test_cases)} test cases for {unit.name}\n\nDescription:\n{output.description[:500]}",
+            success=True,
+            duration_seconds=duration,
+            task_id=unit.name,
+        )
+
+        print(f"[ORACLE] SUCCESS: Generated {len(test_cases)} test cases in {duration:.1f}s")
+
         return OracleResult(
             success=True,
             test_cases=test_cases,
@@ -193,4 +232,13 @@ Generate specific test case descriptions for this code."""
         )
 
     except Exception as e:
+        duration = time.time() - start_time
+        print(f"[ORACLE] ERROR: {e}")
+        await agent_output_artifact(
+            agent_name="oracle",
+            result=str(e),
+            success=False,
+            duration_seconds=duration,
+            task_id=unit.name,
+        )
         return OracleResult(success=False, error=str(e))

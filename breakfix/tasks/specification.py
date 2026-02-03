@@ -24,7 +24,7 @@ class SpecificationError(Exception):
     pass
 
 
-@task(persist_result=True, name="specification")
+@task(persist_result=True, name="specification", log_prints=True)
 async def specification_task(
     working_directory: str,
     config: BreakFixConfig | None = None,

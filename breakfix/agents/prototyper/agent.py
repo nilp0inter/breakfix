@@ -1,4 +1,4 @@
-import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Callable, Awaitable
@@ -10,11 +10,17 @@ from claude_agent_sdk import (
     AssistantMessage,
     UserMessage,
     TextBlock,
+    ToolUseBlock,
+    ToolResultBlock,
 )
 from breakfix.agents.analyst import TestFixture
+from breakfix.artifacts import (
+    agent_input_artifact,
+    agent_output_artifact,
+    agent_iteration_artifact,
+)
 
 MAX_PROTOTYPER_ITERATIONS = 5
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -36,6 +42,7 @@ async def run_prototyper(
     Implement a prototype using ClaudeSDKClient with feedback loop.
     """
     proto_dir = Path(working_dir) / "prototype"
+    start_time = time.time()
 
     # Build initial prompt (no mention of tests)
     prompt = _build_initial_prompt(spec, fixtures, package_name, interface_description)
@@ -47,83 +54,189 @@ async def run_prototyper(
         max_turns=30,
     )
 
+    print("[PROTOTYPER] ========================================")
+    print("[PROTOTYPER] Starting prototype implementation")
+    print(f"[PROTOTYPER] Working directory: {proto_dir}")
+    print(f"[PROTOTYPER] Package name: {package_name}")
+    print("[PROTOTYPER] ========================================")
+
+    # Create input artifact
+    await agent_input_artifact(
+        agent_name="prototyper",
+        prompt=prompt,
+        context={
+            "package_name": package_name,
+            "num_fixtures": len(fixtures),
+            "has_interface_desc": bool(interface_description),
+        },
+    )
+
     async with ClaudeSDKClient(options=options) as client:
         # Initial implementation request
-        logger.info("[PROTOTYPER] Sending initial prompt to Claude:")
-        logger.info("=" * 60)
-        logger.info(prompt)
-        logger.info("=" * 60)
+        print("[PROTOTYPER] Sending initial prompt to Claude...")
+        print("[PROTOTYPER] " + "=" * 50)
+        for line in prompt.split("\n")[:20]:
+            print(f"[PROTOTYPER] {line}")
+        if len(prompt.split("\n")) > 20:
+            print("[PROTOTYPER] ... (truncated)")
+        print("[PROTOTYPER] " + "=" * 50)
 
         await client.query(prompt)
 
         # Wait for completion
+        print("[PROTOTYPER] Waiting for Claude response...")
         async for message in client.receive_response():
             _log_message(message)
             if isinstance(message, ResultMessage):
                 if message.is_error:
+                    duration = time.time() - start_time
+                    error_msg = message.result or "Unknown error"
+                    await agent_output_artifact(
+                        agent_name="prototyper",
+                        result=error_msg,
+                        success=False,
+                        duration_seconds=duration,
+                    )
                     return PrototyperResult(
                         success=False,
                         iterations=1,
-                        error=message.result or "Unknown error"
+                        error=error_msg
                     )
+
+        print("[PROTOTYPER] Initial implementation complete")
 
         # Feedback loop
         for iteration in range(1, MAX_PROTOTYPER_ITERATIONS + 1):
-            logger.info(f"[PROTOTYPER] Iteration {iteration}/{MAX_PROTOTYPER_ITERATIONS}: Running E2E tests...")
+            print(f"[PROTOTYPER] ----------------------------------------")
+            print(f"[PROTOTYPER] Iteration {iteration}/{MAX_PROTOTYPER_ITERATIONS}: Running E2E tests...")
+
+            # Create iteration artifact
+            await agent_iteration_artifact(
+                agent_name="prototyper",
+                iteration=iteration,
+                max_iterations=MAX_PROTOTYPER_ITERATIONS,
+                status="running_tests",
+                details="Running E2E tests to verify implementation",
+            )
 
             # Run E2E tests (closure captures package_name)
             test_result = await run_e2e_test(proto_dir)
 
             if test_result.success:
-                logger.info(f"[PROTOTYPER] E2E tests passed on iteration {iteration}")
+                duration = time.time() - start_time
+                print(f"[PROTOTYPER] E2E tests PASSED on iteration {iteration}")
+                print(f"[PROTOTYPER] Total duration: {duration:.1f}s")
+
+                await agent_output_artifact(
+                    agent_name="prototyper",
+                    result=f"Prototype completed successfully in {iteration} iteration(s)",
+                    success=True,
+                    duration_seconds=duration,
+                )
                 return PrototyperResult(success=True, iterations=iteration)
 
-            logger.info(f"[PROTOTYPER] E2E tests failed. Error:\n{test_result.error}")
+            print(f"[PROTOTYPER] E2E tests FAILED. Error:")
+            for line in str(test_result.error).split("\n")[:15]:
+                print(f"[PROTOTYPER]   {line}")
+            if len(str(test_result.error).split("\n")) > 15:
+                print("[PROTOTYPER]   ... (truncated)")
+
+            # Update iteration artifact with failure
+            await agent_iteration_artifact(
+                agent_name="prototyper",
+                iteration=iteration,
+                max_iterations=MAX_PROTOTYPER_ITERATIONS,
+                status="test_failed",
+                details=str(test_result.error)[:1000],
+            )
 
             if iteration == MAX_PROTOTYPER_ITERATIONS:
+                duration = time.time() - start_time
+                error_msg = f"Max iterations reached. Last error:\n{test_result.error}"
+                await agent_output_artifact(
+                    agent_name="prototyper",
+                    result=error_msg,
+                    success=False,
+                    duration_seconds=duration,
+                )
                 return PrototyperResult(
                     success=False,
                     iterations=iteration,
-                    error=f"Max iterations reached. Last error:\n{test_result.error}"
+                    error=error_msg
                 )
 
             # Send test failure to Claude for fixing
             fix_prompt = _build_fix_prompt(test_result.error)
-            logger.info("[PROTOTYPER] Sending fix prompt to Claude:")
-            logger.info("=" * 60)
-            logger.info(fix_prompt)
-            logger.info("=" * 60)
+            print("[PROTOTYPER] Sending fix prompt to Claude...")
+            print("[PROTOTYPER] " + "=" * 50)
+            for line in fix_prompt.split("\n")[:10]:
+                print(f"[PROTOTYPER] {line}")
+            print("[PROTOTYPER] " + "=" * 50)
 
             await client.query(fix_prompt)
 
+            print("[PROTOTYPER] Waiting for Claude fix response...")
             async for message in client.receive_response():
                 _log_message(message)
                 if isinstance(message, ResultMessage):
                     if message.is_error:
+                        duration = time.time() - start_time
+                        error_msg = message.result or "Fix attempt failed"
+                        await agent_output_artifact(
+                            agent_name="prototyper",
+                            result=error_msg,
+                            success=False,
+                            duration_seconds=duration,
+                        )
                         return PrototyperResult(
                             success=False,
                             iterations=iteration,
-                            error=message.result or "Fix attempt failed"
+                            error=error_msg
                         )
 
+    duration = time.time() - start_time
+    await agent_output_artifact(
+        agent_name="prototyper",
+        result="Unexpected exit from agent loop",
+        success=False,
+        duration_seconds=duration,
+    )
     return PrototyperResult(success=False, iterations=0, error="Unexpected exit")
 
 
 def _log_message(message):
-    """Log messages from Claude SDK."""
+    """Log messages from Claude SDK with detailed output."""
     if isinstance(message, AssistantMessage):
-        logger.info("[CLAUDE] Assistant message:")
+        print("[PROTOTYPER] Claude response:")
         for block in message.content:
             if isinstance(block, TextBlock):
-                logger.info(f"  Text: {block.text}")
+                # Print first few lines of text
+                lines = block.text.split("\n")[:5]
+                for line in lines:
+                    print(f"[PROTOTYPER]   {line[:100]}")
+                if len(block.text.split("\n")) > 5:
+                    print("[PROTOTYPER]   ... (more text)")
+            elif isinstance(block, ToolUseBlock):
+                print(f"[PROTOTYPER]   Tool: {block.name}")
+                # Show key parameters
+                if hasattr(block, "input") and block.input:
+                    if "file_path" in block.input:
+                        print(f"[PROTOTYPER]     file: {block.input['file_path']}")
+                    if "command" in block.input:
+                        cmd = block.input["command"][:80]
+                        print(f"[PROTOTYPER]     cmd: {cmd}...")
             else:
-                logger.info(f"  {type(block).__name__}: {block}")
+                print(f"[PROTOTYPER]   {type(block).__name__}")
     elif isinstance(message, UserMessage):
-        logger.info(f"[CLAUDE] User message: {message.content}")
+        content_str = str(message.content)[:100]
+        print(f"[PROTOTYPER] User/Tool result: {content_str}...")
     elif isinstance(message, ResultMessage):
-        logger.info(f"[CLAUDE] Result: is_error={message.is_error}, result={message.result}")
+        status = "ERROR" if message.is_error else "COMPLETE"
+        print(f"[PROTOTYPER] Agent {status}")
+        if message.result:
+            print(f"[PROTOTYPER]   Result: {str(message.result)[:100]}")
     else:
-        logger.info(f"[CLAUDE] {type(message).__name__}: {message}")
+        print(f"[PROTOTYPER] {type(message).__name__}")
 
 
 def _build_initial_prompt(spec: str, fixtures: List[TestFixture], package_name: str, interface_description: str = "") -> str:

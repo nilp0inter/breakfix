@@ -14,6 +14,7 @@ from breakfix.flows.crucible_flow import crucible_flow
     name="oracle-and-ratchet",
     description="Process a single unit through Oracle + TDD cycles",
     persist_result=True,
+    log_prints=True,
 )
 async def oracle_and_ratchet_flow(
     unit: UnitWorkItem,

@@ -37,7 +37,7 @@ console_scripts =
         setup_cfg_path.write_text(content)
 
 
-@task(persist_result=True, name="scaffold")
+@task(persist_result=True, name="scaffold", log_prints=True)
 async def scaffold_task(
     state: ProjectState,
     config: BreakFixConfig | None = None,

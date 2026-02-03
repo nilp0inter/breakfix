@@ -28,7 +28,7 @@ class MutationTaskResult:
     surviving_mutants: List[SurvivingMutant]
 
 
-@task(persist_result=True, name="mutation")
+@task(persist_result=True, name="mutation", log_prints=True)
 async def mutation_task(
     unit: UnitWorkItem,
     working_directory: str,

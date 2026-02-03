@@ -1,11 +1,13 @@
 import json
+import time
 from pathlib import Path
 from typing import List
 from dataclasses import dataclass
 
-from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage, AssistantMessage, TextBlock, ToolUseBlock
 
 from breakfix.agents.analyst import TestFixture
+from breakfix.artifacts import agent_input_artifact, agent_output_artifact
 
 
 @dataclass
@@ -27,6 +29,14 @@ async def run_e2e_builder(
     2. Writes fixtures.json
     3. Uses Claude Code to generate run_tests.py
     """
+    start_time = time.time()
+
+    print("[E2E-BUILDER] ========================================")
+    print(f"[E2E-BUILDER] Creating E2E test harness")
+    print(f"[E2E-BUILDER] Working directory: {working_dir}")
+    print(f"[E2E-BUILDER] Number of fixtures: {len(fixtures)}")
+    print("[E2E-BUILDER] ========================================")
+
     e2e_dir = Path(working_dir) / "e2e-tests"
     e2e_dir.mkdir(parents=True, exist_ok=True)
 
@@ -34,6 +44,7 @@ async def run_e2e_builder(
     fixtures_data = [f.model_dump() for f in fixtures]
     fixtures_path = e2e_dir / "fixtures.json"
     fixtures_path.write_text(json.dumps(fixtures_data, indent=2))
+    print(f"[E2E-BUILDER] Wrote fixtures.json with {len(fixtures_data)} fixtures")
 
     # Build prompt for Claude Code
     fixture_example = json.dumps(fixtures_data[0] if fixtures_data else {}, indent=2)
@@ -167,28 +178,95 @@ Start by creating run_tests.py, then mock_program.py, then verify they work toge
         max_turns=30,
     )
 
+    # Create input artifact
+    await agent_input_artifact(
+        agent_name="e2e-builder",
+        prompt=prompt[:2000] + "...(truncated)",  # Prompt is long
+        context={
+            "working_dir": working_dir,
+            "num_fixtures": len(fixtures),
+        },
+    )
+
+    print("[E2E-BUILDER] Sending prompt to Claude...")
+
     try:
         async for message in query(prompt=prompt, options=options):
-            if isinstance(message, ResultMessage):
+            # Log messages for visibility
+            if isinstance(message, AssistantMessage):
+                print("[E2E-BUILDER] Claude response:")
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        lines = block.text.split('\n')[:5]
+                        for line in lines:
+                            print(f"[E2E-BUILDER]   {line[:80]}")
+                        if len(block.text.split('\n')) > 5:
+                            print("[E2E-BUILDER]   ...")
+                    elif isinstance(block, ToolUseBlock):
+                        print(f"[E2E-BUILDER]   Tool: {block.name}")
+            elif isinstance(message, ResultMessage):
                 if message.is_error:
+                    duration = time.time() - start_time
+                    error_msg = message.result or "Unknown error"
+                    print(f"[E2E-BUILDER] ERROR: {error_msg}")
+                    await agent_output_artifact(
+                        agent_name="e2e-builder",
+                        result=error_msg,
+                        success=False,
+                        duration_seconds=duration,
+                    )
                     return E2EBuilderResult(
                         success=False,
-                        error=message.result or "Unknown error"
+                        error=error_msg
                     )
 
         # Verify both files were created
         if not (e2e_dir / "run_tests.py").exists():
+            duration = time.time() - start_time
+            error_msg = "run_tests.py was not created"
+            print(f"[E2E-BUILDER] ERROR: {error_msg}")
+            await agent_output_artifact(
+                agent_name="e2e-builder",
+                result=error_msg,
+                success=False,
+                duration_seconds=duration,
+            )
             return E2EBuilderResult(
                 success=False,
-                error="run_tests.py was not created"
+                error=error_msg
             )
         if not (e2e_dir / "mock_program.py").exists():
+            duration = time.time() - start_time
+            error_msg = "mock_program.py was not created"
+            print(f"[E2E-BUILDER] ERROR: {error_msg}")
+            await agent_output_artifact(
+                agent_name="e2e-builder",
+                result=error_msg,
+                success=False,
+                duration_seconds=duration,
+            )
             return E2EBuilderResult(
                 success=False,
-                error="mock_program.py was not created"
+                error=error_msg
             )
 
+        duration = time.time() - start_time
+        print(f"[E2E-BUILDER] SUCCESS: Created run_tests.py and mock_program.py in {duration:.1f}s")
+        await agent_output_artifact(
+            agent_name="e2e-builder",
+            result="Successfully created run_tests.py and mock_program.py",
+            success=True,
+            duration_seconds=duration,
+        )
         return E2EBuilderResult(success=True)
 
     except Exception as e:
+        duration = time.time() - start_time
+        print(f"[E2E-BUILDER] FATAL ERROR: {e}")
+        await agent_output_artifact(
+            agent_name="e2e-builder",
+            result=str(e),
+            success=False,
+            duration_seconds=duration,
+        )
         return E2EBuilderResult(success=False, error=str(e))

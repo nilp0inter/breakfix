@@ -12,6 +12,7 @@ from breakfix.tasks import mutation_task, sentinel_task, optimization_task
     name="crucible",
     description="Mutation testing and optimization for a unit",
     persist_result=True,
+    log_prints=True,
 )
 async def crucible_flow(
     unit: UnitWorkItem,

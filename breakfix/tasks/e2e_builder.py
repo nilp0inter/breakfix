@@ -30,7 +30,7 @@ Example interaction:
 {interface_desc.example_interaction}"""
 
 
-@task(persist_result=True, name="e2e-builder")
+@task(persist_result=True, name="e2e-builder", log_prints=True)
 async def e2e_builder_task(
     state: ProjectState,
     config: BreakFixConfig | None = None,

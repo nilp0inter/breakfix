@@ -26,7 +26,7 @@ class SentinelTaskResult:
     mutant_id: int
 
 
-@task(persist_result=True, retries=2, retry_delay_seconds=10, name="sentinel")
+@task(persist_result=True, retries=2, retry_delay_seconds=10, name="sentinel", log_prints=True)
 async def sentinel_task(
     unit: UnitWorkItem,
     mutant: SurvivingMutant,

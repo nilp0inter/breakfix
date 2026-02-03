@@ -1,7 +1,7 @@
 """Ratchet Green Phase - Developer agent that implements minimal code to pass tests."""
-import logging
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,6 +13,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     UserMessage,
     TextBlock,
+    ToolUseBlock,
     HookMatcher,
     PreToolUseHookInput,
     HookContext,
@@ -25,12 +26,14 @@ from .coverage import (
     save_baseline,
     format_coverage_feedback,
 )
+from breakfix.artifacts import (
+    agent_input_artifact,
+    agent_output_artifact,
+    agent_iteration_artifact,
+)
 
 if TYPE_CHECKING:
     from breakfix.state import UnitWorkItem, TestCase
-
-
-logger = logging.getLogger(__name__)
 
 MAX_RATCHET_GREEN_RETRIES = 5
 
@@ -138,21 +141,29 @@ After implementing, say "Implementation complete" and stop.
 
 
 def _log_message(message):
-    """Log messages from Claude SDK."""
+    """Log messages from Claude SDK with detailed output."""
     if isinstance(message, AssistantMessage):
-        logger.info("[DEVELOPER] Assistant message:")
+        print("[RATCHET-GREEN] Claude response:")
         for block in message.content:
             if isinstance(block, TextBlock):
-                for line in block.text.split('\n')[:10]:  # First 10 lines
-                    logger.info(f"  {line}")
-                if len(block.text.split('\n')) > 10:
-                    logger.info("  ...")
+                lines = block.text.split('\n')[:8]
+                for line in lines:
+                    print(f"[RATCHET-GREEN]   {line[:100]}")
+                if len(block.text.split('\n')) > 8:
+                    print("[RATCHET-GREEN]   ... (more text)")
+            elif isinstance(block, ToolUseBlock):
+                print(f"[RATCHET-GREEN]   Tool: {block.name}")
+                if hasattr(block, "input") and block.input:
+                    if "file_path" in block.input:
+                        print(f"[RATCHET-GREEN]     file: {block.input['file_path']}")
             else:
-                logger.info(f"  {type(block).__name__}")
+                print(f"[RATCHET-GREEN]   {type(block).__name__}")
     elif isinstance(message, UserMessage):
-        logger.info(f"[DEVELOPER] User message: {str(message.content)[:100]}...")
+        content_str = str(message.content)[:80]
+        print(f"[RATCHET-GREEN] User/Tool result: {content_str}...")
     elif isinstance(message, ResultMessage):
-        logger.info(f"[DEVELOPER] Result: is_error={message.is_error}")
+        status = "ERROR" if message.is_error else "COMPLETE"
+        print(f"[RATCHET-GREEN] Agent {status}")
 
 
 def run_pytest(production_dir: Path) -> PytestResult:
@@ -160,7 +171,7 @@ def run_pytest(production_dir: Path) -> PytestResult:
     pytest_path = production_dir / ".venv" / "bin" / "pytest"
     tests_dir = production_dir / "tests"
 
-    logger.info(f"[RATCHET-GREEN] Running pytest: {pytest_path} -v {tests_dir}")
+    print(f"[RATCHET-GREEN] Running pytest: {pytest_path} -v {tests_dir}")
 
     try:
         result = subprocess.run(
@@ -175,18 +186,26 @@ def run_pytest(production_dir: Path) -> PytestResult:
         if result.stderr:
             output += "\n" + result.stderr
 
-        logger.info(f"[RATCHET-GREEN] Pytest return code: {result.returncode}")
+        status = "PASSED" if result.returncode == 0 else "FAILED"
+        print(f"[RATCHET-GREEN] Pytest {status} (return code: {result.returncode})")
+
+        # Show summary of output
+        for line in output.split("\n")[-10:]:
+            if line.strip():
+                print(f"[RATCHET-GREEN]   {line[:100]}")
 
         return PytestResult(
             success=(result.returncode == 0),
             output=output,
         )
     except subprocess.TimeoutExpired:
+        print("[RATCHET-GREEN] Pytest TIMEOUT after 120 seconds")
         return PytestResult(
             success=False,
             output="Pytest timed out after 120 seconds",
         )
     except Exception as e:
+        print(f"[RATCHET-GREEN] Pytest ERROR: {e}")
         return PytestResult(
             success=False,
             output=f"Failed to run pytest: {e}",
@@ -309,29 +328,61 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
 
     retries = 0
     checkpoint_id = None
+    start_time = time.time()
+    task_id = f"{unit.name}-{test_case.id}"
+
+    print("[RATCHET-GREEN] ========================================")
+    print(f"[RATCHET-GREEN] Starting GREEN phase for: {unit.name}")
+    print(f"[RATCHET-GREEN] Test case: {test_case.description[:60]}...")
+    print(f"[RATCHET-GREEN] Unit file: {unit.module_path}")
+    print("[RATCHET-GREEN] ========================================")
+
+    # Create input artifact
+    await agent_input_artifact(
+        agent_name="ratchet-green",
+        prompt=base_prompt,
+        context={
+            "unit_name": unit.name,
+            "test_case_id": test_case.id,
+            "unit_file": unit.module_path,
+        },
+        task_id=task_id,
+    )
 
     try:
         async with ClaudeSDKClient(options=options) as client:
-            logger.info(f"[RATCHET-GREEN] Sending initial prompt to developer agent")
+            print(f"[RATCHET-GREEN] Sending initial prompt to developer agent...")
             await client.query(base_prompt)
 
             while retries < max_retries:
                 # Process agent response
+                print(f"[RATCHET-GREEN] Waiting for Claude response...")
                 async for message in client.receive_response():
                     _log_message(message)
                     if isinstance(message, UserMessage) and hasattr(message, 'uuid') and message.uuid and not checkpoint_id:
                         checkpoint_id = message.uuid
-                        logger.info(f"[RATCHET-GREEN] Captured checkpoint: {checkpoint_id}")
+                        print(f"[RATCHET-GREEN] Captured checkpoint: {checkpoint_id[:20]}...")
                     if isinstance(message, ResultMessage):
                         if message.is_error:
                             raise Exception(message.result or "Agent error")
 
                 # Run pytest to verify implementation
-                logger.info(f"[RATCHET-GREEN] Running pytest (attempt {retries + 1}/{max_retries})")
+                print(f"[RATCHET-GREEN] ----------------------------------------")
+                print(f"[RATCHET-GREEN] Running pytest (attempt {retries + 1}/{max_retries})")
+
+                await agent_iteration_artifact(
+                    agent_name="ratchet-green",
+                    iteration=retries + 1,
+                    max_iterations=max_retries,
+                    status="running_tests",
+                    details="Running pytest to verify implementation",
+                    task_id=task_id,
+                )
+
                 pytest_result = run_pytest(production_dir)
 
                 if pytest_result.success:
-                    logger.info(f"[RATCHET-GREEN] All tests passed! Checking coverage...")
+                    print(f"[RATCHET-GREEN] All tests PASSED! Checking coverage...")
 
                     # Run pytest with coverage to check for dead code
                     cov_success, coverage_data, cov_output = run_pytest_with_coverage(
@@ -341,7 +392,15 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
 
                     if coverage_data is None:
                         # Coverage collection failed - abort
-                        logger.error("[RATCHET-GREEN] Coverage check failed: no coverage data")
+                        print("[RATCHET-GREEN] ERROR: Coverage check failed - no coverage data")
+                        duration = time.time() - start_time
+                        await agent_output_artifact(
+                            agent_name="ratchet-green",
+                            result=f"Coverage data could not be collected. Output:\n{cov_output[:500]}",
+                            success=False,
+                            duration_seconds=duration,
+                            task_id=task_id,
+                        )
                         return RatchetGreenResult(
                             success=False,
                             error=f"Coverage data could not be collected. Output:\n{cov_output[:500]}",
@@ -357,7 +416,7 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
 
                     if not dead_code_lines:
                         # Coverage check passed!
-                        logger.info("[RATCHET-GREEN] Coverage check passed!")
+                        print("[RATCHET-GREEN] SUCCESS: Coverage check passed!")
                         save_baseline(
                             working_dir,
                             unit.name,
@@ -366,10 +425,18 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
                             unit.line_number,
                             unit.end_line_number,
                         )
+                        duration = time.time() - start_time
+                        await agent_output_artifact(
+                            agent_name="ratchet-green",
+                            result=f"Implementation complete. All tests passing with full coverage.",
+                            success=True,
+                            duration_seconds=duration,
+                            task_id=task_id,
+                        )
                         return RatchetGreenResult(success=True, retries=retries)
 
                     # Coverage violation - need to fix dead code
-                    logger.warning(f"[RATCHET-GREEN] Dead code detected on lines: {dead_code_lines}")
+                    print(f"[RATCHET-GREEN] WARNING: Dead code detected on lines: {dead_code_lines}")
                     retries += 1
 
                     if retries < max_retries:
@@ -378,16 +445,24 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
                             unit.module_path,
                             production_dir,
                         )
-                        logger.info("[RATCHET-GREEN] Sending coverage feedback to agent")
+                        print("[RATCHET-GREEN] Sending coverage feedback to agent...")
                         await client.query(coverage_feedback)
                         continue  # Agent will fix, then we re-run tests AND coverage
                     else:
                         # Max retries exceeded - rewind and fail
-                        logger.error(f"[RATCHET-GREEN] Max retries exceeded (dead code)")
+                        print(f"[RATCHET-GREEN] ERROR: Max retries exceeded (dead code)")
                         if checkpoint_id:
-                            logger.info(f"[RATCHET-GREEN] Rewinding to checkpoint {checkpoint_id}")
+                            print(f"[RATCHET-GREEN] Rewinding to checkpoint...")
                             await client.rewind_files(checkpoint_id)
 
+                        duration = time.time() - start_time
+                        await agent_output_artifact(
+                            agent_name="ratchet-green",
+                            result=f"Dead code on lines {dead_code_lines} after {retries} attempts",
+                            success=False,
+                            duration_seconds=duration,
+                            task_id=task_id,
+                        )
                         return RatchetGreenResult(
                             success=False,
                             error=f"Dead code on lines {dead_code_lines} after {retries} attempts",
@@ -396,7 +471,16 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
 
                 # Tests failed - send output back to agent
                 retries += 1
-                logger.warning(f"[RATCHET-GREEN] Tests failed (attempt {retries}/{max_retries})")
+                print(f"[RATCHET-GREEN] Tests FAILED (attempt {retries}/{max_retries})")
+
+                await agent_iteration_artifact(
+                    agent_name="ratchet-green",
+                    iteration=retries,
+                    max_iterations=max_retries,
+                    status="test_failed",
+                    details=pytest_result.output[:500],
+                    task_id=task_id,
+                )
 
                 if retries < max_retries:
                     # Feed pytest output back to agent
@@ -410,21 +494,37 @@ CRITICAL: DO NOT RUN THE TESTS. I, THE USER, WILL RUN THEM FOR YOU AND PASTE THE
 Read the error carefully and fix the code to make all tests pass.
 Remember: You can ONLY edit {unit.module_path}
 """
-                    logger.info(f"[RATCHET-GREEN] Sending failure feedback to agent")
+                    print(f"[RATCHET-GREEN] Sending failure feedback to agent...")
                     await client.query(feedback_prompt)
                 else:
                     # Max retries exceeded - rewind and fail
-                    logger.error(f"[RATCHET-GREEN] Max retries exceeded")
+                    print(f"[RATCHET-GREEN] ERROR: Max retries exceeded")
                     if checkpoint_id:
-                        logger.info(f"[RATCHET-GREEN] Rewinding to checkpoint {checkpoint_id}")
+                        print(f"[RATCHET-GREEN] Rewinding to checkpoint...")
                         await client.rewind_files(checkpoint_id)
 
+                    duration = time.time() - start_time
+                    await agent_output_artifact(
+                        agent_name="ratchet-green",
+                        result=f"Tests still failing after {retries} attempts. Last output:\n{pytest_result.output[:500]}",
+                        success=False,
+                        duration_seconds=duration,
+                        task_id=task_id,
+                    )
                     return RatchetGreenResult(
                         success=False,
                         error=f"Tests still failing after {retries} attempts. Last output:\n{pytest_result.output[:500]}",
                         retries=retries,
                     )
 
+            duration = time.time() - start_time
+            await agent_output_artifact(
+                agent_name="ratchet-green",
+                result="Max retries exceeded",
+                success=False,
+                duration_seconds=duration,
+                task_id=task_id,
+            )
             return RatchetGreenResult(
                 success=False,
                 error="Max retries exceeded",
@@ -432,7 +532,15 @@ Remember: You can ONLY edit {unit.module_path}
             )
 
     except Exception as e:
-        logger.error(f"[RATCHET-GREEN] Fatal error: {e}")
+        print(f"[RATCHET-GREEN] FATAL ERROR: {e}")
+        duration = time.time() - start_time
+        await agent_output_artifact(
+            agent_name="ratchet-green",
+            result=f"Fatal error: {e}",
+            success=False,
+            duration_seconds=duration,
+            task_id=task_id,
+        )
         return RatchetGreenResult(
             success=False,
             error=str(e),
