@@ -1,14 +1,14 @@
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Awaitable
-import logging
 
-from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage, AssistantMessage, TextBlock, ToolUseBlock
 
 from breakfix.agents.architecture_reviewer import ReviewerOutput
+from breakfix.artifacts import agent_input_artifact, agent_output_artifact, agent_iteration_artifact
 
 MAX_REFACTOR_ITERATIONS = 5
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -32,8 +32,27 @@ async def run_refactorer(
     2. If clean → return success
     3. If violations → Claude fixes → run E2E tests → if E2E fails → Claude fixes E2E → goto 1
     """
+    start_time = time.time()
     proto_dir = Path(working_dir) / "prototype"
     src_dir = proto_dir / "src" / package_name
+
+    print("[REFACTORER] ========================================")
+    print(f"[REFACTORER] Starting FCIS refactoring")
+    print(f"[REFACTORER] Working directory: {working_dir}")
+    print(f"[REFACTORER] Package: {package_name}")
+    print(f"[REFACTORER] Max iterations: {MAX_REFACTOR_ITERATIONS}")
+    print("[REFACTORER] ========================================")
+
+    # Create input artifact
+    await agent_input_artifact(
+        agent_name="refactorer",
+        prompt=f"Refactor {package_name} to FCIS architecture",
+        context={
+            "working_dir": working_dir,
+            "package_name": package_name,
+            "max_iterations": MAX_REFACTOR_ITERATIONS,
+        },
+    )
 
     options = ClaudeAgentOptions(
         cwd=str(proto_dir),
@@ -43,19 +62,60 @@ async def run_refactorer(
     )
 
     for iteration in range(1, MAX_REFACTOR_ITERATIONS + 1):
-        logger.info(f"[REFACTORER] Iteration {iteration}: Running architecture review...")
+        print(f"[REFACTORER] ----------------------------------------")
+        print(f"[REFACTORER] Iteration {iteration}/{MAX_REFACTOR_ITERATIONS}")
+        print(f"[REFACTORER] ----------------------------------------")
+
+        await agent_iteration_artifact(
+            agent_name="refactorer",
+            iteration=iteration,
+            max_iterations=MAX_REFACTOR_ITERATIONS,
+            status="running",
+            details="Running architecture review",
+        )
 
         # Step 1: Review architecture
-        logger.info("[REFACTORER] Running ArchitectureReviewer...")
+        print("[REFACTORER] Running ArchitectureReviewer...")
         review_result = await review_architecture(src_dir)
 
         # Step 2: If clean, we're done!
         if review_result.is_clean:
-            logger.info(f"[REFACTORER] Architecture is clean on iteration {iteration}")
+            duration = time.time() - start_time
+            print(f"[REFACTORER] SUCCESS: Architecture is clean on iteration {iteration}")
+            print(f"[REFACTORER] Total duration: {duration:.1f}s")
+            await agent_iteration_artifact(
+                agent_name="refactorer",
+                iteration=iteration,
+                max_iterations=MAX_REFACTOR_ITERATIONS,
+                status="completed",
+                details="Architecture is clean - FCIS compliant",
+            )
+            await agent_output_artifact(
+                agent_name="refactorer",
+                result=f"Successfully refactored to FCIS architecture in {iteration} iteration(s)",
+                success=True,
+                duration_seconds=duration,
+            )
             return RefactorerResult(success=True, iterations=iteration)
 
         # Check if max iterations reached
         if iteration == MAX_REFACTOR_ITERATIONS:
+            duration = time.time() - start_time
+            error_msg = f"Max iterations reached. Remaining violations: {review_result.summary}"
+            print(f"[REFACTORER] FAILED: {error_msg}")
+            await agent_iteration_artifact(
+                agent_name="refactorer",
+                iteration=iteration,
+                max_iterations=MAX_REFACTOR_ITERATIONS,
+                status="failed",
+                details=error_msg,
+            )
+            await agent_output_artifact(
+                agent_name="refactorer",
+                result=error_msg,
+                success=False,
+                duration_seconds=duration,
+            )
             return RefactorerResult(
                 success=False,
                 iterations=iteration,
@@ -63,29 +123,95 @@ async def run_refactorer(
             )
 
         # Step 3: Violations found - call Claude to fix
-        logger.info(f"[REFACTORER] Found {len(review_result.violations)} violations:")
-        logger.info(f"[REFACTORER] Summary: {review_result.summary}")
+        print(f"[REFACTORER] Found {len(review_result.violations)} violations:")
+        print(f"[REFACTORER] Summary: {review_result.summary}")
         for v in review_result.violations:
-            logger.info(f"[REFACTORER]   - {v.file_path}::{v.function_or_class} [{v.violation_type}]: {v.description}")
-            logger.info(f"[REFACTORER]     Snippet: {v.code_snippet}")
+            print(f"[REFACTORER]   - {v.file_path}::{v.function_or_class} [{v.violation_type}]")
+            print(f"[REFACTORER]     {v.description}")
+            if v.code_snippet:
+                snippet_lines = v.code_snippet.split('\n')[:3]
+                for line in snippet_lines:
+                    print(f"[REFACTORER]       {line[:80]}")
+
+        await agent_iteration_artifact(
+            agent_name="refactorer",
+            iteration=iteration,
+            max_iterations=MAX_REFACTOR_ITERATIONS,
+            status="running",
+            details=f"Fixing {len(review_result.violations)} violations",
+        )
 
         refactor_prompt = _build_refactor_prompt(review_result, package_name)
+        print("[REFACTORER] Sending refactor prompt to Claude...")
         async for message in query(prompt=refactor_prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        lines = block.text.split('\n')[:3]
+                        for line in lines:
+                            print(f"[REFACTORER]   {line[:80]}")
+                    elif isinstance(block, ToolUseBlock):
+                        print(f"[REFACTORER]   Tool: {block.name}")
             if isinstance(message, ResultMessage) and message.is_error:
+                duration = time.time() - start_time
+                error_msg = f"Refactor failed on iteration {iteration}"
+                print(f"[REFACTORER] ERROR: {error_msg}")
+                await agent_output_artifact(
+                    agent_name="refactorer",
+                    result=error_msg,
+                    success=False,
+                    duration_seconds=duration,
+                )
                 return RefactorerResult(success=False, iterations=iteration, error="Refactor failed")
 
         # Step 4: Run E2E tests after refactoring to verify we didn't break anything
-        logger.info("[REFACTORER] Running E2E tests after refactor...")
+        print("[REFACTORER] Running E2E tests after refactor...")
         test_result = await run_e2e_test(proto_dir, package_name)
 
         # Step 5: If E2E failed, call Claude to fix
         if not test_result.success:
-            logger.info(f"[REFACTORER] E2E tests failed: {test_result.error}")
+            print(f"[REFACTORER] E2E tests failed: {test_result.error}")
+            await agent_iteration_artifact(
+                agent_name="refactorer",
+                iteration=iteration,
+                max_iterations=MAX_REFACTOR_ITERATIONS,
+                status="running",
+                details=f"E2E tests failed, attempting fix: {test_result.error[:100]}",
+            )
             fix_prompt = _build_e2e_fix_prompt(test_result.error, package_name)
+            print("[REFACTORER] Sending E2E fix prompt to Claude...")
             async for message in query(prompt=fix_prompt, options=options):
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            lines = block.text.split('\n')[:3]
+                            for line in lines:
+                                print(f"[REFACTORER]   {line[:80]}")
+                        elif isinstance(block, ToolUseBlock):
+                            print(f"[REFACTORER]   Tool: {block.name}")
                 if isinstance(message, ResultMessage) and message.is_error:
+                    duration = time.time() - start_time
+                    error_msg = f"E2E fix failed on iteration {iteration}"
+                    print(f"[REFACTORER] ERROR: {error_msg}")
+                    await agent_output_artifact(
+                        agent_name="refactorer",
+                        result=error_msg,
+                        success=False,
+                        duration_seconds=duration,
+                    )
                     return RefactorerResult(success=False, iterations=iteration, error="E2E fix failed")
+        else:
+            print("[REFACTORER] E2E tests passed after refactor")
 
+    duration = time.time() - start_time
+    error_msg = "Unexpected exit from refactorer loop"
+    print(f"[REFACTORER] ERROR: {error_msg}")
+    await agent_output_artifact(
+        agent_name="refactorer",
+        result=error_msg,
+        success=False,
+        duration_seconds=duration,
+    )
     return RefactorerResult(success=False, iterations=MAX_REFACTOR_ITERATIONS, error="Unexpected exit")
 
 

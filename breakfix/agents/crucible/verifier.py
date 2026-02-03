@@ -1,12 +1,11 @@
 """Verification that Sentinel's test actually kills a mutant."""
 
-import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .mutation import run_mutation_testing
-
-logger = logging.getLogger(__name__)
+from breakfix.artifacts import agent_input_artifact, agent_output_artifact
 
 
 @dataclass
@@ -43,9 +42,26 @@ async def verify_mutant_killed(
         VerificationResult indicating if the mutant was killed
     """
     production_dir = Path(production_dir)
+    start_time = time.time()
+
+    print("[VERIFIER] ========================================")
+    print(f"[VERIFIER] Verifying mutant kill: {mutant_id}")
+    print(f"[VERIFIER] Unit: {unit_fqn}")
+    print("[VERIFIER] ========================================")
+
+    await agent_input_artifact(
+        agent_name="verifier",
+        prompt=f"Verify mutant {mutant_id} is killed",
+        context={
+            "unit_fqn": unit_fqn,
+            "mutant_id": mutant_id,
+            "module_path": module_path,
+        },
+        task_id=f"{unit_fqn}-{mutant_id}",
+    )
 
     try:
-        logger.info(f"[VERIFIER] Re-running mutation testing to verify mutant {mutant_id} is killed")
+        print(f"[VERIFIER] Re-running mutation testing to verify mutant {mutant_id} is killed")
 
         # Re-run mutation testing with the new test in place
         result = await run_mutation_testing(
@@ -57,19 +73,45 @@ async def verify_mutant_killed(
         )
 
         if not result.success:
+            duration = time.time() - start_time
+            error_msg = f"Mutation testing failed during verification: {result.error}"
+            print(f"[VERIFIER] ERROR: {error_msg}")
+            await agent_output_artifact(
+                agent_name="verifier",
+                result=error_msg,
+                success=False,
+                duration_seconds=duration,
+                task_id=f"{unit_fqn}-{mutant_id}",
+            )
             return VerificationResult(
                 killed=False,
-                error=f"Mutation testing failed during verification: {result.error}"
+                error=error_msg
             )
 
         # Check if target mutant is still surviving
         surviving_ids = [m.id for m in result.surviving_mutants]
         killed = mutant_id not in surviving_ids
 
+        duration = time.time() - start_time
+
         if killed:
-            logger.info(f"[VERIFIER] Mutant {mutant_id} successfully killed!")
+            print(f"[VERIFIER] SUCCESS: Mutant {mutant_id} successfully killed!")
+            await agent_output_artifact(
+                agent_name="verifier",
+                result=f"Mutant {mutant_id} killed successfully",
+                success=True,
+                duration_seconds=duration,
+                task_id=f"{unit_fqn}-{mutant_id}",
+            )
         else:
-            logger.warning(f"[VERIFIER] Mutant {mutant_id} still surviving")
+            print(f"[VERIFIER] WARNING: Mutant {mutant_id} still surviving")
+            await agent_output_artifact(
+                agent_name="verifier",
+                result=f"Mutant {mutant_id} still surviving. Remaining: {len(surviving_ids)}",
+                success=False,
+                duration_seconds=duration,
+                task_id=f"{unit_fqn}-{mutant_id}",
+            )
 
         return VerificationResult(
             killed=killed,
@@ -77,7 +119,15 @@ async def verify_mutant_killed(
         )
 
     except Exception as e:
-        logger.error(f"[VERIFIER] Error during verification: {e}")
+        duration = time.time() - start_time
+        print(f"[VERIFIER] ERROR: Error during verification: {e}")
+        await agent_output_artifact(
+            agent_name="verifier",
+            result=str(e),
+            success=False,
+            duration_seconds=duration,
+            task_id=f"{unit_fqn}-{mutant_id}",
+        )
         return VerificationResult(
             killed=False,
             error=str(e),

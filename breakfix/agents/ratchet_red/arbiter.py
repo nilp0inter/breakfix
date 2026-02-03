@@ -5,14 +5,13 @@ whether to keep or discard it based on Kent Beck's two criteria:
 1. Confidence: Does the test increase confidence in the system?
 2. Communication: Does the test document a meaningfully different scenario?
 """
-import logging
+import time
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-
-logger = logging.getLogger(__name__)
+from breakfix.artifacts import agent_input_artifact, agent_output_artifact
 
 
 class ArbiterDecision(BaseModel):
@@ -121,7 +120,7 @@ async def arbitrate_test(
     # Read the complete test file
     test_file = tests_dir.parent / file_part
     if not test_file.exists():
-        logger.error(f"[ARBITER] Test file not found: {test_file}")
+        print(f"[ARBITER] ERROR: Test file not found: {test_file}")
         # Default to keep if we can't read the file
         return ArbiterDecision(
             keep_test=True,
@@ -131,7 +130,7 @@ async def arbitrate_test(
         )
 
     test_file_content = test_file.read_text()
-    logger.info(f"[ARBITER] Evaluating test '{test_function_name}' from {test_file}")
+    print(f"[ARBITER] Evaluating test '{test_function_name}' from {test_file}")
 
     # Mark the offending test in the file content
     marked_content = _mark_offending_test(test_file_content, test_function_name)
@@ -164,18 +163,49 @@ Compare the marked test against the OTHER tests in the file.
 Decide: Should we KEEP this test (for documentation/safety) or DISCARD it (truly redundant)?
 """
 
+    start_time = time.time()
+
+    await agent_input_artifact(
+        agent_name="arbiter",
+        prompt=prompt[:1500] + "...(truncated)" if len(prompt) > 1500 else prompt,
+        context={
+            "test_file_path": test_file_path,
+            "test_function_name": test_function_name,
+        },
+        task_id=f"arbiter-{test_function_name}",
+    )
+
     try:
         result = await agent.run(prompt)
         decision = result.output
-        logger.info(
+        duration = time.time() - start_time
+
+        print(
             f"[ARBITER] Decision: keep={decision.keep_test}, "
             f"confidence={decision.confidence_value}, "
             f"communication={decision.communication_value}"
         )
-        logger.info(f"[ARBITER] Reasoning: {decision.reasoning[:200]}...")
+        print(f"[ARBITER] Reasoning: {decision.reasoning[:200]}...")
+
+        await agent_output_artifact(
+            agent_name="arbiter",
+            result=f"keep_test={decision.keep_test}\nconfidence={decision.confidence_value}\ncommunication={decision.communication_value}\nreasoning={decision.reasoning[:300]}",
+            success=True,
+            duration_seconds=duration,
+            task_id=f"arbiter-{test_function_name}",
+        )
+
         return decision
     except Exception as e:
-        logger.error(f"[ARBITER] Error during arbitration: {e}")
+        duration = time.time() - start_time
+        print(f"[ARBITER] ERROR: Error during arbitration: {e}")
+        await agent_output_artifact(
+            agent_name="arbiter",
+            result=str(e),
+            success=False,
+            duration_seconds=duration,
+            task_id=f"arbiter-{test_function_name}",
+        )
         # Default to keep on error
         return ArbiterDecision(
             keep_test=True,

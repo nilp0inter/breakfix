@@ -1,5 +1,9 @@
+import time
+
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
+
+from breakfix.artifacts import agent_input_artifact, agent_output_artifact
 
 
 class InterfaceDescription(BaseModel):
@@ -42,6 +46,41 @@ def create_interface_analyzer(model: str = "openai:gpt-5-mini") -> Agent[None, I
 
 async def analyze_interface(mock_program_code: str, model: str = "openai:gpt-5-mini") -> InterfaceDescription:
     """Analyze a program's interface from its source code."""
+    start_time = time.time()
+
+    print("[INTERFACE-ANALYZER] ========================================")
+    print(f"[INTERFACE-ANALYZER] Analyzing mock program interface")
+    print(f"[INTERFACE-ANALYZER] Model: {model}")
+    print(f"[INTERFACE-ANALYZER] Code length: {len(mock_program_code)} chars")
+    print("[INTERFACE-ANALYZER] ========================================")
+
+    prompt = f"Analyze this program's interface:\n\n```python\n{mock_program_code}\n```"
+
+    await agent_input_artifact(
+        agent_name="interface-analyzer",
+        prompt=prompt[:1000] + "...(truncated)" if len(prompt) > 1000 else prompt,
+        context={
+            "model": model,
+            "code_length": len(mock_program_code),
+        },
+    )
+
     agent = create_interface_analyzer(model)
-    result = await agent.run(f"Analyze this program's interface:\n\n```python\n{mock_program_code}\n```")
-    return result.output
+    result = await agent.run(prompt)
+    output = result.output
+
+    duration = time.time() - start_time
+
+    print(f"[INTERFACE-ANALYZER] Summary: {output.summary}")
+    print(f"[INTERFACE-ANALYZER] Input method: {output.input_method}")
+    print(f"[INTERFACE-ANALYZER] Output method: {output.output_method}")
+    print(f"[INTERFACE-ANALYZER] Duration: {duration:.1f}s")
+
+    await agent_output_artifact(
+        agent_name="interface-analyzer",
+        result=f"Summary: {output.summary}\nInput: {output.input_method} ({output.input_format})\nOutput: {output.output_method} ({output.output_format})\nInvocation: {output.invocation}",
+        success=True,
+        duration_seconds=duration,
+    )
+
+    return output

@@ -2,12 +2,12 @@
 
 import ast
 import json
-import logging
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from breakfix.artifacts import agent_input_artifact, agent_output_artifact
 
 # Timeout for cosmic-ray commands (in seconds)
 COSMIC_RAY_INIT_TIMEOUT = 120  # 2 minutes for init
@@ -77,7 +77,7 @@ name = "local"
 '''
 
     config_path.write_text(config_content)
-    logger.info(f"[MUTATION] Created cosmic-ray config at {config_path}")
+    print(f"[MUTATION] Created cosmic-ray config at {config_path}")
 
 
 def _run_cosmic_ray_command(
@@ -95,8 +95,8 @@ def _run_cosmic_ray_command(
         )
 
     cmd = [str(cosmic_ray_path)] + args
-    logger.info(f"[MUTATION] Running: {' '.join(cmd)}")
-    logger.info(f"[MUTATION] cwd: {production_dir}")
+    print(f"[MUTATION] Running: {' '.join(cmd)}")
+    print(f"[MUTATION] cwd: {production_dir}")
 
     result = subprocess.run(
         cmd,
@@ -169,7 +169,7 @@ def _parse_cosmic_ray_dump(
                     }
                     records.append(record)
         except json.JSONDecodeError as e:
-            logger.warning(f"[MUTATION] Failed to parse line: {e}")
+            print(f"[MUTATION] WARNING: Failed to parse line: {e}")
             continue
 
     # Filter to mutants within the line range
@@ -194,7 +194,7 @@ def _parse_cosmic_ray_dump(
 
     total = len(filtered_records)
 
-    logger.info(
+    print(
         f"[MUTATION] Parsed {total} mutants in line range [{start_line}, {end_line}]: "
         f"{killed} killed, {len(surviving)} survived"
     )
@@ -229,7 +229,7 @@ def _find_function_line_range(
         source = module_file.read_text()
         tree = ast.parse(source)
     except (OSError, SyntaxError) as e:
-        logger.error(f"[MUTATION] Failed to parse {module_file}: {e}")
+        print(f"[MUTATION] ERROR: Failed to parse {module_file}: {e}")
         return None
 
     for node in ast.walk(tree):
@@ -237,12 +237,12 @@ def _find_function_line_range(
             if node.name == function_name:
                 start_line = node.lineno
                 end_line = node.end_lineno or start_line
-                logger.info(
+                print(
                     f"[MUTATION] Found function '{function_name}' at lines {start_line}-{end_line}"
                 )
                 return start_line, end_line
 
-    logger.warning(f"[MUTATION] Function '{function_name}' not found in {module_file}")
+    print(f"[MUTATION] WARNING: Function '{function_name}' not found in {module_file}")
     return None
 
 
@@ -282,7 +282,7 @@ async def run_mutation_testing(
         )
 
     actual_start_line, actual_end_line = line_range
-    logger.info(
+    print(
         f"[MUTATION] Using line range [{actual_start_line}, {actual_end_line}] "
         f"for {function_name} (passed: [{start_line}, {end_line}])"
     )
@@ -294,13 +294,13 @@ async def run_mutation_testing(
         # Remove old session if exists
         if session_path.exists():
             session_path.unlink()
-            logger.info(f"[MUTATION] Removed old session: {session_path}")
+            print(f"[MUTATION] Removed old session: {session_path}")
 
         # Create config for this module
         _create_cosmic_ray_config(production_dir, module_path, config_path)
 
         # Step 1: Initialize session
-        logger.info("[MUTATION] Initializing cosmic-ray session...")
+        print("[MUTATION] Initializing cosmic-ray session...")
         init_result = _run_cosmic_ray_command(
             production_dir,
             ["init", str(config_path), str(session_path)],
@@ -308,30 +308,30 @@ async def run_mutation_testing(
         )
 
         if init_result.returncode != 0:
-            logger.error(f"[MUTATION] cosmic-ray init failed: {init_result.stderr}")
+            print(f"[MUTATION] ERROR: cosmic-ray init failed: {init_result.stderr}")
             return MutationResult(
                 success=False,
                 error=f"cosmic-ray init failed: {init_result.stderr}"
             )
 
-        logger.info(f"[MUTATION] Init completed: {init_result.stdout[:500] if init_result.stdout else '(empty)'}")
+        print(f"[MUTATION] Init completed: {init_result.stdout[:500] if init_result.stdout else '(empty)'}")
 
         # Step 2: Execute mutations
-        logger.info("[MUTATION] Executing cosmic-ray mutations...")
+        print("[MUTATION] Executing cosmic-ray mutations...")
         exec_result = _run_cosmic_ray_command(
             production_dir,
             ["exec", str(config_path), str(session_path)],
             timeout=COSMIC_RAY_EXEC_TIMEOUT,
         )
 
-        logger.info(f"[MUTATION] Exec returned: {exec_result.returncode}")
+        print(f"[MUTATION] Exec returned: {exec_result.returncode}")
         if exec_result.stdout:
-            logger.info(f"[MUTATION] Exec stdout: {exec_result.stdout[:500]}")
+            print(f"[MUTATION] Exec stdout: {exec_result.stdout[:500]}")
         if exec_result.stderr:
-            logger.warning(f"[MUTATION] Exec stderr: {exec_result.stderr[:500]}")
+            print(f"[MUTATION] WARNING: Exec stderr: {exec_result.stderr[:500]}")
 
         # Step 3: Dump results as JSON
-        logger.info("[MUTATION] Dumping cosmic-ray results...")
+        print("[MUTATION] Dumping cosmic-ray results...")
         dump_result = _run_cosmic_ray_command(
             production_dir,
             ["dump", str(session_path)],
@@ -339,7 +339,7 @@ async def run_mutation_testing(
         )
 
         if dump_result.returncode != 0:
-            logger.error(f"[MUTATION] cosmic-ray dump failed: {dump_result.stderr}")
+            print(f"[MUTATION] ERROR: cosmic-ray dump failed: {dump_result.stderr}")
             return MutationResult(
                 success=False,
                 error=f"cosmic-ray dump failed: {dump_result.stderr}"
@@ -354,7 +354,7 @@ async def run_mutation_testing(
 
         # Handle case where no mutants were generated in the line range
         if total_mutants == 0:
-            logger.warning(f"[MUTATION] No mutants in line range [{actual_start_line}, {actual_end_line}] for {unit_fqn}")
+            print(f"[MUTATION] WARNING: No mutants in line range [{actual_start_line}, {actual_end_line}] for {unit_fqn}")
             return MutationResult(
                 success=True,
                 score=1.0,  # Perfect score if no mutants
@@ -387,7 +387,7 @@ async def run_mutation_testing(
             error=f"Mutation testing timed out: {e}"
         )
     except Exception as e:
-        logger.error(f"[MUTATION] Error: {e}")
+        print(f"[MUTATION] ERROR: {e}")
         return MutationResult(success=False, error=str(e))
 
 
@@ -452,7 +452,7 @@ async def get_mutant_diff(production_dir: Path, mutant_id: str) -> str:
                     except json.JSONDecodeError:
                         continue
         except Exception as e:
-            logger.warning(f"[MUTATION] Error searching {session_file}: {e}")
+            print(f"[MUTATION] WARNING: Error searching {session_file}: {e}")
             continue
 
     return f"(Mutant {mutant_id} not found in any session)"

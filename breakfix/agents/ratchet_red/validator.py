@@ -1,12 +1,11 @@
 """Test validator using Pydantic AI to verify test adheres to specification."""
-import logging
+import time
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-
-logger = logging.getLogger(__name__)
+from breakfix.artifacts import agent_input_artifact, agent_output_artifact
 
 
 class ValidationResult(BaseModel):
@@ -81,14 +80,14 @@ async def validate_test(
     # Read the test file
     test_file = tests_dir.parent / file_part
     if not test_file.exists():
-        logger.error(f"[VALIDATOR] Test file not found: {test_file}")
+        print(f"[VALIDATOR] ERROR: Test file not found: {test_file}")
         return ValidationResult(
             is_valid=False,
             reason=f"Test file not found: {test_file}"
         )
 
     test_content = test_file.read_text()
-    logger.info(f"[VALIDATOR] Validating test '{test_name}' from {test_file}")
+    print(f"[VALIDATOR] Validating test '{test_name}' from {test_file}")
 
     agent = create_test_validator(model)
 
@@ -120,13 +119,45 @@ Consider:
 - Is it a single focused test?
 """
 
+    start_time = time.time()
+
+    await agent_input_artifact(
+        agent_name="validator",
+        prompt=prompt[:1000] + "...(truncated)" if len(prompt) > 1000 else prompt,
+        context={
+            "unit_name": unit_name,
+            "test_file_path": test_file_path,
+            "test_name": test_name,
+        },
+        task_id=f"{unit_name}-{test_name}",
+    )
+
     try:
         result = await agent.run(prompt)
         validation = result.output
-        logger.info(f"[VALIDATOR] Result: is_valid={validation.is_valid}, reason={validation.reason[:100] if validation.reason else 'N/A'}")
+        duration = time.time() - start_time
+
+        print(f"[VALIDATOR] Result: is_valid={validation.is_valid}, reason={validation.reason[:100] if validation.reason else 'N/A'}")
+
+        await agent_output_artifact(
+            agent_name="validator",
+            result=f"is_valid={validation.is_valid}\nreason={validation.reason}" if validation.reason else f"is_valid={validation.is_valid}",
+            success=validation.is_valid,
+            duration_seconds=duration,
+            task_id=f"{unit_name}-{test_name}",
+        )
+
         return validation
     except Exception as e:
-        logger.error(f"[VALIDATOR] Error during validation: {e}")
+        duration = time.time() - start_time
+        print(f"[VALIDATOR] ERROR: Error during validation: {e}")
+        await agent_output_artifact(
+            agent_name="validator",
+            result=str(e),
+            success=False,
+            duration_seconds=duration,
+            task_id=f"{unit_name}-{test_name}",
+        )
         return ValidationResult(
             is_valid=False,
             reason=f"Validation error: {str(e)}"

@@ -1,11 +1,8 @@
 """Coverage intersection checking for Ratchet Green phase."""
 import json
-import logging
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -61,7 +58,7 @@ def run_pytest_with_coverage(
         str(tests_dir),
     ]
 
-    logger.info(f"[COVERAGE] Running: {' '.join(cmd)}")
+    print(f"[COVERAGE] Running: {' '.join(cmd)}")
 
     try:
         result = subprocess.run(
@@ -76,27 +73,27 @@ def run_pytest_with_coverage(
         if result.stderr:
             output += "\n" + result.stderr
 
-        logger.info(f"[COVERAGE] Pytest return code: {result.returncode}")
-        logger.info(f"[COVERAGE] Looking for coverage file at: {coverage_json_path}")
+        print(f"[COVERAGE] Pytest return code: {result.returncode}")
+        print(f"[COVERAGE] Looking for coverage file at: {coverage_json_path}")
 
         coverage_data = None
         if coverage_json_path.exists():
             with open(coverage_json_path) as f:
                 coverage_data = json.load(f)
-            logger.info(f"[COVERAGE] Coverage data loaded from {coverage_json_path}")
+            print(f"[COVERAGE] Coverage data loaded from {coverage_json_path}")
         else:
             # Check if it was created elsewhere
-            logger.warning(f"[COVERAGE] Coverage file not found at {coverage_json_path}")
+            print(f"[COVERAGE] WARNING: Coverage file not found at {coverage_json_path}")
             # List files in production_dir to debug
             files = list(production_dir.glob("*.json")) + list(production_dir.glob(".coverage*"))
-            logger.warning(f"[COVERAGE] JSON/coverage files in {production_dir}: {files}")
+            print(f"[COVERAGE] WARNING: JSON/coverage files in {production_dir}: {files}")
 
         return (result.returncode == 0), coverage_data, output
 
     except subprocess.TimeoutExpired:
         return False, None, "Coverage run timed out after 180 seconds"
     except Exception as e:
-        logger.error(f"[COVERAGE] Error: {e}")
+        print(f"[COVERAGE] ERROR: {e}")
         return False, None, f"Coverage run failed: {e}"
 
 
@@ -129,8 +126,8 @@ def check_coverage_intersection(
             break
 
     if file_data is None:
-        logger.warning(f"[COVERAGE] File {module_path} not found in coverage data")
-        logger.warning(f"[COVERAGE] Available files: {list(files_data.keys())}")
+        print(f"[COVERAGE] WARNING: File {module_path} not found in coverage data")
+        print(f"[COVERAGE] WARNING: Available files: {list(files_data.keys())}")
         return set()
 
     missing_lines = set(file_data.get("missing_lines", []))
@@ -140,9 +137,9 @@ def check_coverage_intersection(
     dead_code = missing_lines & function_range
 
     if dead_code:
-        logger.info(f"[COVERAGE] Dead code detected in {module_path}:{start_line}-{end_line}: {dead_code}")
+        print(f"[COVERAGE] Dead code detected in {module_path}:{start_line}-{end_line}: {dead_code}")
     else:
-        logger.info(f"[COVERAGE] No dead code in {module_path}:{start_line}-{end_line}")
+        print(f"[COVERAGE] No dead code in {module_path}:{start_line}-{end_line}")
 
     return dead_code
 
@@ -172,7 +169,7 @@ def load_baseline(working_dir: Path, unit_fqn: str) -> set[int] | None:
             data = json.load(f)
         return set(data.get("executed_lines", []))
     except (json.JSONDecodeError, KeyError) as e:
-        logger.warning(f"[COVERAGE] Failed to load baseline: {e}")
+        print(f"[COVERAGE] WARNING: Failed to load baseline: {e}")
         return None
 
 
@@ -204,7 +201,7 @@ def save_baseline(
             break
 
     if file_data is None:
-        logger.warning(f"[COVERAGE] Cannot save baseline: {module_path} not found")
+        print(f"[COVERAGE] WARNING: Cannot save baseline: {module_path} not found")
         return
 
     executed_lines = set(file_data.get("executed_lines", []))
@@ -217,7 +214,7 @@ def save_baseline(
     with open(path, "w") as f:
         json.dump({"executed_lines": sorted(executed_in_function)}, f, indent=2)
 
-    logger.info(f"[COVERAGE] Saved baseline: {len(executed_in_function)} lines to {path}")
+    print(f"[COVERAGE] Saved baseline: {len(executed_in_function)} lines to {path}")
 
 
 def format_coverage_feedback(
